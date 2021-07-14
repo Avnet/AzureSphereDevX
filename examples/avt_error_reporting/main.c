@@ -58,6 +58,8 @@
 static DX_DIRECT_METHOD_RESPONSE_CODE ErrorReportHandler(
     JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
 
+static void AzureConnectionCheckHandler(EventLoopTimer *eventLoopTimer);
+
 // Variables
 DX_USER_CONFIG dx_config;
 
@@ -65,15 +67,30 @@ DX_USER_CONFIG dx_config;
  * GPIO Peripherals
  ****************************************************************************************/
 
+static DX_GPIO_BINDING ledRed = {.pin = LED_RED,
+                              .name = "ledRed",
+                              .direction = DX_OUTPUT,
+                              .initialState = GPIO_Value_Low,
+                              .invertPin = true};
+
+static DX_GPIO_BINDING ledBlue = {.pin = LED_BLUE,
+                              .name = "ledBlue",
+                              .direction = DX_OUTPUT,
+                              .initialState = GPIO_Value_Low,
+                              .invertPin = true};
+
+
 // All GPIOs added to gpio_set will be opened in InitPeripheralsAndHandlers
-DX_GPIO_BINDING *gpio_set[] = {};
+DX_GPIO_BINDING *gpio_set[] = {&ledRed, &ledBlue};
 
 /****************************************************************************************
  * Timer Bindings
  ****************************************************************************************/
+static DX_TIMER_BINDING azureConnectionCeckTimer = {
+    .period = {2, 0}, .name = "AzureConnectionCheckTimer", .handler = AzureConnectionCheckHandler};
 
 // All timers referenced in timers with be opened in the InitPeripheralsAndHandlers function
-DX_TIMER_BINDING *timers[] = {};
+DX_TIMER_BINDING *timers[] = {&azureConnectionCeckTimer};
 
 /****************************************************************************************
  * Azure IoT Direct Method Bindings
@@ -158,6 +175,10 @@ static DX_DIRECT_METHOD_RESPONSE_CODE ErrorReportHandler(
     errorCode = (int)json_object_get_number(jsonObject, errorCode_str);
     Log_Debug("ErrorCode %d \n", errorCode);
 
+    // Turn off the LEDs before exiting
+    dx_gpioOff(&ledRed);
+    dx_gpioOff(&ledBlue);
+
     switch(errorCode)
     {
         case 0: // generate SIGKILL exit
@@ -171,4 +192,24 @@ static DX_DIRECT_METHOD_RESPONSE_CODE ErrorReportHandler(
             break;
     }
     return DX_METHOD_SUCCEEDED;
+}
+
+/// <summary>
+/// Handler to check for Azure IoTHub connection status
+/// </summary>
+static void AzureConnectionCheckHandler(EventLoopTimer *eventLoopTimer)
+{
+    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
+        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        return;
+    }
+
+    if(dx_isAzureConnected()){
+        dx_gpioOff(&ledRed);
+        dx_gpioOn(&ledBlue);
+    }
+    else{
+        dx_gpioOn(&ledRed);
+        dx_gpioOff(&ledBlue);
+    }
 }
