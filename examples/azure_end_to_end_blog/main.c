@@ -76,16 +76,22 @@ static DX_MESSAGE_PROPERTY *messageProperties[] = {&(DX_MESSAGE_PROPERTY){.key =
                                                   &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
                                                   &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
 
+// Define a message property for the memory leak telemetry messages.  Using a different set of properties allows the
+// Azure implementation to route these messages to a different endpoint, such as automated support ticket system
+static DX_MESSAGE_PROPERTY *memoryMessageProperties[] = {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "hvac"},
+                                                        &(DX_MESSAGE_PROPERTY){.key = "type", .value = "memoryLeakAlert"},
+                                                        &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
+
 static DX_MESSAGE_CONTENT_PROPERTIES contentProperties = {.contentEncoding = "utf-8", .contentType = "application/json"};
 
 // declare all bindings
-static DX_DEVICE_TWIN_BINDING dt_desired_sample_rate = {.twinProperty = "DesiredSampleRate", .twinType = DX_DEVICE_TWIN_INT, .handler = dt_desired_sample_rate_handler};
-static DX_DEVICE_TWIN_BINDING dt_deviceConnectUtc = {.twinProperty = "DeviceConnectUtc", .twinType = DX_DEVICE_TWIN_STRING};
-static DX_DEVICE_TWIN_BINDING dt_deviceStartUtc = {.twinProperty = "DeviceStartUtc", .twinType = DX_DEVICE_TWIN_STRING};
-static DX_DEVICE_TWIN_BINDING dt_reported_humidity = {.twinProperty = "ReportedHumidity", .twinType = DX_DEVICE_TWIN_DOUBLE};
-static DX_DEVICE_TWIN_BINDING dt_reported_temperature = {.twinProperty = "ReportedTemperature", .twinType = DX_DEVICE_TWIN_FLOAT};
-static DX_DEVICE_TWIN_BINDING dt_reported_utc = {.twinProperty = "ReportedUTC", .twinType = DX_DEVICE_TWIN_STRING};
-static DX_DEVICE_TWIN_BINDING dt_softwareVersion = {.twinProperty = "SoftwareVersion", .twinType = DX_DEVICE_TWIN_STRING};
+static DX_DEVICE_TWIN_BINDING dt_desired_sample_rate = {.propertyName = "DesiredSampleRate", .twinType = DX_DEVICE_TWIN_INT, .handler = dt_desired_sample_rate_handler};
+static DX_DEVICE_TWIN_BINDING dt_deviceConnectUtc = {.propertyName = "DeviceConnectUtc", .twinType = DX_DEVICE_TWIN_STRING};
+static DX_DEVICE_TWIN_BINDING dt_deviceStartUtc = {.propertyName = "DeviceStartUtc", .twinType = DX_DEVICE_TWIN_STRING};
+static DX_DEVICE_TWIN_BINDING dt_reported_humidity = {.propertyName = "ReportedHumidity", .twinType = DX_DEVICE_TWIN_DOUBLE};
+static DX_DEVICE_TWIN_BINDING dt_reported_temperature = {.propertyName = "ReportedTemperature", .twinType = DX_DEVICE_TWIN_FLOAT};
+static DX_DEVICE_TWIN_BINDING dt_reported_utc = {.propertyName = "ReportedUTC", .twinType = DX_DEVICE_TWIN_STRING};
+static DX_DEVICE_TWIN_BINDING dt_softwareVersion = {.propertyName = "SoftwareVersion", .twinType = DX_DEVICE_TWIN_STRING};
 
 static DX_DIRECT_METHOD_BINDING dm_light_control = {.methodName = "LightControl", .handler = LightControlHandler};
 static DX_DIRECT_METHOD_BINDING dm_memory_leak = {.methodName = "MemoryLeak", .handler = MemoryLeakHandler};
@@ -154,13 +160,13 @@ static void report_properties_handler(EventLoopTimer *eventLoopTimer)
     if (dx_isAzureConnected()) {
 
         // Update twin with current UTC (Universal Time Coordinate) in ISO format
-        dx_deviceTwinReportState(&dt_reported_utc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
+        dx_deviceTwinReportValue(&dt_reported_utc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
 
         // The type passed in must match the Divice Twin Type DX_DEVICE_TWIN_FLOAT
-        dx_deviceTwinReportState(&dt_reported_temperature, &temperature);
+        dx_deviceTwinReportValue(&dt_reported_temperature, &temperature);
 
         // The type passed in must match the Divice Twin Type DX_DEVICE_TWIN_DOUBLE
-        dx_deviceTwinReportState(&dt_reported_humidity, &humidity);
+        dx_deviceTwinReportValue(&dt_reported_humidity, &humidity);
     }
 }
 
@@ -192,7 +198,7 @@ static void monitor_memory_handler(EventLoopTimer *eventLoopTimer)
 
                 Log_Debug("%s\n", msgBuffer);
 
-                dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+                dx_azurePublish(msgBuffer, strlen(msgBuffer), memoryMessageProperties, NELEMS(memoryMessageProperties), &contentProperties);
 
             } else {
                 Log_Debug("JSON Serialization failed: Buffer too small\n");
@@ -203,26 +209,26 @@ static void monitor_memory_handler(EventLoopTimer *eventLoopTimer)
 
 static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
 {
-    int sample_rate_seconds = *(int *)deviceTwinBinding->twinState;
+    int sample_rate_seconds = *(int *)deviceTwinBinding->propertyValue;
 
     // validate data is sensible range before applying
     if (sample_rate_seconds >= 0 && sample_rate_seconds <= 120) {
 
         dx_timerChange(&tmr_publish_message, &(struct timespec){sample_rate_seconds, 0});
 
-        dx_deviceTwinAckDesiredState(deviceTwinBinding, deviceTwinBinding->twinState, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+        dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
 
     } else {
-        dx_deviceTwinAckDesiredState(deviceTwinBinding, deviceTwinBinding->twinState, DX_DEVICE_TWIN_RESPONSE_ERROR);
+        dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_ERROR);
     }
 
     /*	Casting device twin state examples
 
-            float value = *(float*)deviceTwinBinding->twinState;
-            double value = *(double*)deviceTwinBinding->twinState;
-            int value = *(int*)deviceTwinBinding->twinState;
-            bool value = *(bool*)deviceTwinBinding->twinState;
-            char* value = (char*)deviceTwinBinding->twinState;
+            float value = *(float*)deviceTwinBinding->propertyValue;
+            double value = *(double*)deviceTwinBinding->propertyValue;
+            int value = *(int*)deviceTwinBinding->propertyValue;
+            bool value = *(bool*)deviceTwinBinding->propertyValue;
+            char* value = (char*)deviceTwinBinding->propertyValue;
     */
 }
 
@@ -274,13 +280,13 @@ static void NetworkConnectionState(bool connected)
         first_time = false;
 
         // This is the first connect so update device start time UTC and software version
-        dx_deviceTwinReportState(&dt_deviceStartUtc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
+        dx_deviceTwinReportValue(&dt_deviceStartUtc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
         snprintf(msgBuffer, sizeof(msgBuffer), "Sample version: %s, DevX version: %s", SAMPLE_VERSION_NUMBER, AZURE_SPHERE_DEVX_VERSION);
-        dx_deviceTwinReportState(&dt_softwareVersion, msgBuffer);
+        dx_deviceTwinReportValue(&dt_softwareVersion, msgBuffer);
     }
 
     if (connected) {
-        dx_deviceTwinReportState(&dt_deviceConnectUtc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
+        dx_deviceTwinReportValue(&dt_deviceConnectUtc, dx_getCurrentUtc(msgBuffer, sizeof(msgBuffer)));
     }
 
     dx_gpioStateSet(&gpio_network_led, connected);
