@@ -23,27 +23,27 @@ project (azure_end_to_end C)
 azsphere_configure_tools(TOOLS_REVISION "21.07")
 azsphere_configure_api(TARGET_API_SET "10")
 
-add_subdirectory("../../" out)
+add_subdirectory("../../../" out)
 
 # Create executable
 add_executable (${PROJECT_NAME} main.c)
 target_link_libraries (${PROJECT_NAME} applibs pthread gcc_s c azure_sphere_devx)
-target_include_directories(${PROJECT_NAME} PUBLIC ../../include )
+target_include_directories(${PROJECT_NAME} PUBLIC ../../../include )
 
 
 if(AVNET)
     add_definitions( -DOEM_AVNET=TRUE )
-    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../HardwareDefinitions/avnet_mt3620_sk" TARGET_DEFINITION "azure_sphere_learning_path.json")
+    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../../HardwareDefinitions/avnet_mt3620_sk" TARGET_DEFINITION "azure_sphere_learning_path.json")
 endif(AVNET)
 
 if(AVNET_REV_2)
     add_definitions( -DOEM_AVNET=TRUE )
-    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../HardwareDefinitions/avnet_mt3620_sk_rev2" TARGET_DEFINITION "azure_sphere_learning_path.json")
+    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../../HardwareDefinitions/avnet_mt3620_sk_rev2" TARGET_DEFINITION "azure_sphere_learning_path.json")
 endif(AVNET_REV_2)
 
 if (SEEED_STUDIO_RDB)
     add_definitions( -DOEM_SEEED_STUDIO=TRUE )
-    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../HardwareDefinitions/mt3620_rdb" TARGET_DEFINITION "azure_sphere_learning_path.json")
+    azsphere_target_hardware_definition(${PROJECT_NAME} TARGET_DIRECTORY "../../HardwareDefinitions/mt3620_rdb" TARGET_DEFINITION "azure_sphere_learning_path.json")
 endif()
 
 if (SEEED_STUDIO_MINI)
