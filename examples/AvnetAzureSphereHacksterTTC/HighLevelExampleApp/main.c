@@ -48,9 +48,11 @@
 #include "applibs_versions.h"
 #include <applibs/log.h>
 #include <applibs/wificonfig.h>
+#include <applibs/powermanagement.h>
 #include "build_options.h"
 #include "i2c.h"
 #include "oled.h"
+
 
 // Make sure we're using the IOT Hub code for the PNP configuration
 #ifdef USE_PNP
@@ -90,7 +92,8 @@ static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 static void publish_message_handler(EventLoopTimer *eventLoopTimer);
 static void read_sensors_handler(EventLoopTimer *eventLoopTimer);
 static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer);
-
+static void delay_restart_timer_handler(EventLoopTimer *eventLoopTimer);
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
 static void ReadWifiConfig(bool outputDebug);
 
 DX_USER_CONFIG dx_config;
@@ -149,21 +152,17 @@ static DX_DEVICE_TWIN_BINDING dt_bssid =          {.propertyName = "bssid", .twi
 /****************************************************************************************
  * Direct Methods
  ****************************************************************************************/
+//static DX_DIRECT_METHOD_BINDING dm_sensor_poll_control = {.methodName = "setSensorPollTime", .handler = dmSetTelemetryTxTimeHandlerFunction};
+static DX_DIRECT_METHOD_BINDING dm_reboot_control =      {.methodName = "rebootDevice", .handler = dm_restart_device_handler};
+//static DX_DIRECT_METHOD_BINDING dm_reset_control =       {.methodName = "haltApplication", .handler = dm_restart_device_handler};
 
-/*
-static DX_DIRECT_METHOD_BINDING dm_test =                {.methodName = "test", .handler = dmTestHandlerFunction};
-static DX_DIRECT_METHOD_BINDING dm_sensor_poll_control = {.methodName = "setSensorPollTime", .handler = dmSetTelemetryTxTimeHandlerFunction};
-static DX_DIRECT_METHOD_BINDING dm_reboot_control =      {.methodName = "rebootDevice", .handler = dmRebootHandlerFunction};
-// Reproduce the rebootDevice entry but use a different direct method name.  This change maintains compatability with the 
-// IoTCentral application we share with the community.  Set the init and cleanup pointers to NULL since we'll use the same timer
-// as the rebootDevice direct method.
-static DX_DIRECT_METHOD_BINDING dm_reset_control =        {.methodName = "haltApplication", .handler = dmRebootHandlerFunction};
-
-*/
-
+/****************************************************************************************
+ * Timers
+ ****************************************************************************************/
 static DX_TIMER_BINDING tmr_publish_message = {.period = {TELEMETRY_SEND_PERIOD_SECONDS, 0}, .name = "tmr_publish_message", .handler = publish_message_handler};
 static DX_TIMER_BINDING tmr_monitor_wifi_network = {.period = {30, 0}, .name = "tmr_monitor_wifi_network", .handler = monitor_wifi_network_handler};
 static DX_TIMER_BINDING tmr_read_sensors = {.period = {SENSOR_READ_PERIOD_SECONDS, 0}, .name = "tmr_read_sensors", .handler = read_sensors_handler};
+static DX_TIMER_BINDING tmr_reboot = {.period = {0, 0}, .name = "tmr_reboot", .handler = delay_restart_timer_handler};
 
 
 // All bindings referenced in the folowing binding sets are initialised in the InitPeripheralsAndHandlers function
@@ -172,9 +171,9 @@ DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led
                                                   &dt_oled_line2, &dt_oled_line3, &dt_oled_line4,
                                                   &dt_version_string, &dt_manufacturer, &dt_model, &dt_ssid, &dt_freq, &dt_bssid};
 
-// DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_test, &dm_sensor_poll_control, &dm_reboot_control, &dm_reset_control};
+DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_reboot_control}; //, &dm_sensor_poll_control, &dm_reboot_control, &dm_reset_control};
 DX_GPIO_BINDING *gpio_bindings[] = {&buttonA, &buttonB, &userLedRed, &userLedGreen, &userLedBlue, &wifiLed, &appLed, &clickRelay1, &clickRelay2};
-DX_TIMER_BINDING *timer_bindings[] = {&tmr_publish_message, &tmr_monitor_wifi_network, &tmr_read_sensors};
+DX_TIMER_BINDING *timer_bindings[] = {&tmr_publish_message, &tmr_monitor_wifi_network, &tmr_read_sensors, &tmr_reboot};
 
 
 /****************************************************************************************
@@ -419,8 +418,6 @@ static void NetworkConnectionState(bool connected)
             dx_deviceTwinReportValue(&dt_model, "Avnet Starter Kit");
         }
     }
-
-    Log_Debug("New connection state: %s\n", connected ? "Connected": "Not Connected");
 }
 
 // Read the current wifi configuration, output it to debug and send it up as device twin data
@@ -484,6 +481,68 @@ static void ReadWifiConfig(bool outputDebug){
 }
 
 /// <summary>
+///  Function for rebootDevice directMethod
+///  name: rebootDevice
+///  Payload: {"delayTime": 0 < delay in seconds > 12*60*60}
+///  Start Reboot Device Direct Method 'RebootDevice' {"delayTime":15}
+/// </summary>
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg)
+{
+    
+    char delay_str[] = "delayTime";
+    int requested_delay_seconds;
+
+    // Allocate memory for the response message.  Note that the Azure IoT SDK will free this memory
+	static const char reboot_response[] = "{ \"success\" : true, \"message\" : \"Rebooting Device in %d seconds\"}";
+    static const char error_response[] = "{  \"success\" : true, \"message\" : \"delayTime out of range: %d}";
+    
+    // Determine size of largest response message, add 8 to cover the delay time that will be inserted into the response string
+    size_t responseLen = ((sizeof(reboot_response) < sizeof(error_response))? sizeof(error_response): sizeof(reboot_response)) + 8; 
+	*responseMsg = (char *)malloc((size_t)responseLen); 
+    memset(*responseMsg, 0, responseLen);
+
+    JSON_Object *jsonObject = json_value_get_object(json);
+    if (jsonObject == NULL) {
+        return DX_METHOD_FAILED;
+    }
+
+    // check JSON properties sent through are the correct type
+    if (!json_object_has_value_of_type(jsonObject, delay_str, JSONNumber)) {
+        return DX_METHOD_FAILED;
+    }
+
+    requested_delay_seconds = (int)json_object_get_number(jsonObject, delay_str);
+    Log_Debug("Reboot Delay %d \n", requested_delay_seconds);
+
+    if (IN_RANGE(requested_delay_seconds, 1, (12*60*60))) {
+
+        // Create Direct Method Response
+        snprintf(*responseMsg, responseLen, reboot_response, directMethodBinding->methodName, requested_delay_seconds);
+    
+        // Set the timer to fire after the requested delayTime
+        dx_timerOneShotSet(&tmr_reboot, &(struct timespec){requested_delay_seconds, 0});
+        return DX_METHOD_SUCCEEDED;
+    
+    }
+
+    snprintf(*responseMsg, responseLen, error_response, requested_delay_seconds);
+    return DX_METHOD_FAILED;
+}
+
+/// <summary>
+/// Restart the Device
+/// </summary>
+static void delay_restart_timer_handler(EventLoopTimer *eventLoopTimer)
+{
+    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
+        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        return;
+    }
+
+    PowerManagement_ForceSystemReboot();
+}
+
+/// <summary>
 ///  Initialize peripherals, device twins, direct methods, timer_bindings.
 /// </summary>
 static void InitPeripheralsAndHandlers(void)
@@ -492,7 +551,7 @@ static void InitPeripheralsAndHandlers(void)
     dx_gpioSetOpen(gpio_bindings, NELEMS(gpio_bindings));
     dx_timerSetStart(timer_bindings, NELEMS(timer_bindings));
     dx_deviceTwinSubscribe(device_twin_bindings, NELEMS(device_twin_bindings));
-//    dx_directMethodSubscribe(direct_method_bindings, NELEMS(direct_method_bindings));
+    dx_directMethodSubscribe(direct_method_bindings, NELEMS(direct_method_bindings));
 
     dx_azureRegisterConnectionChangedNotification(NetworkConnectionState);
 
