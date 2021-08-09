@@ -89,11 +89,13 @@ network_var network_data;
 static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 static void dt_gpio_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
-static void publish_message_handler(EventLoopTimer *eventLoopTimer);
+static void publish_message_handler(void);
 static void read_sensors_handler(EventLoopTimer *eventLoopTimer);
 static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer);
 static void delay_restart_timer_handler(EventLoopTimer *eventLoopTimer);
 static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_set_sensor_poll_period(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_halt_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
 static void ReadWifiConfig(bool outputDebug);
 
 DX_USER_CONFIG dx_config;
@@ -106,8 +108,9 @@ DX_USER_CONFIG dx_config;
 #define JSON_MESSAGE_BYTES 512
 static char msgBuffer[JSON_MESSAGE_BYTES] = {0};
 
-static DX_MESSAGE_PROPERTY *messageProperties[] = {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "SK-Demo"}, &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
-                                                   &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
+static DX_MESSAGE_PROPERTY *messageProperties[] =   {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "SK-Demo"}, 
+                                                    &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
+                                                    &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
 
 static DX_MESSAGE_CONTENT_PROPERTIES contentProperties = {.contentEncoding = "utf-8", .contentType = "application/json"};
 
@@ -152,14 +155,13 @@ static DX_DEVICE_TWIN_BINDING dt_bssid =          {.propertyName = "bssid", .twi
 /****************************************************************************************
  * Direct Methods
  ****************************************************************************************/
-//static DX_DIRECT_METHOD_BINDING dm_sensor_poll_control = {.methodName = "setSensorPollTime", .handler = dmSetTelemetryTxTimeHandlerFunction};
+static DX_DIRECT_METHOD_BINDING dm_sensor_poll_time = {.methodName = "setSensorPollTime", .handler = dm_set_sensor_poll_period};
 static DX_DIRECT_METHOD_BINDING dm_reboot_control =      {.methodName = "rebootDevice", .handler = dm_restart_device_handler};
-//static DX_DIRECT_METHOD_BINDING dm_reset_control =       {.methodName = "haltApplication", .handler = dm_restart_device_handler};
+static DX_DIRECT_METHOD_BINDING dm_halt_control =       {.methodName = "haltApplication", .handler = dm_halt_device_handler};
 
 /****************************************************************************************
  * Timers
  ****************************************************************************************/
-static DX_TIMER_BINDING tmr_publish_message = {.period = {TELEMETRY_SEND_PERIOD_SECONDS, 0}, .name = "tmr_publish_message", .handler = publish_message_handler};
 static DX_TIMER_BINDING tmr_monitor_wifi_network = {.period = {30, 0}, .name = "tmr_monitor_wifi_network", .handler = monitor_wifi_network_handler};
 static DX_TIMER_BINDING tmr_read_sensors = {.period = {SENSOR_READ_PERIOD_SECONDS, 0}, .name = "tmr_read_sensors", .handler = read_sensors_handler};
 static DX_TIMER_BINDING tmr_reboot = {.period = {0, 0}, .name = "tmr_reboot", .handler = delay_restart_timer_handler};
@@ -171,23 +173,17 @@ DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led
                                                   &dt_oled_line2, &dt_oled_line3, &dt_oled_line4,
                                                   &dt_version_string, &dt_manufacturer, &dt_model, &dt_ssid, &dt_freq, &dt_bssid};
 
-DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_reboot_control}; //, &dm_sensor_poll_control, &dm_reboot_control, &dm_reset_control};
+DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_reboot_control, &dm_sensor_poll_time, &dm_halt_control};
 DX_GPIO_BINDING *gpio_bindings[] = {&buttonA, &buttonB, &userLedRed, &userLedGreen, &userLedBlue, &wifiLed, &appLed, &clickRelay1, &clickRelay2};
-DX_TIMER_BINDING *timer_bindings[] = {&tmr_publish_message, &tmr_monitor_wifi_network, &tmr_read_sensors, &tmr_reboot};
+DX_TIMER_BINDING *timer_bindings[] = {&tmr_monitor_wifi_network, &tmr_read_sensors, &tmr_reboot};
 
 
 /****************************************************************************************
  * Implementation
  ****************************************************************************************/
 
-static void publish_message_handler(EventLoopTimer *eventLoopTimer)
+static void publish_message_handler(void)
 {
-    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
-        return;
-    }
-
-//#define USE_IOT_CONNECT
 
 #ifdef IOT_HUB_APPLICATION
 #ifdef USE_IOT_CONNECT
@@ -220,7 +216,7 @@ static void publish_message_handler(EventLoopTimer *eventLoopTimer)
                     DX_JSON_DOUBLE, "pressure", pressure_kPa,
                     DX_JSON_DOUBLE, "light_intensity", light_sensor,
                     DX_JSON_DOUBLE, "altitude", altitude,
-                    DX_JSON_DOUBLE, "lsm6dso_temperature", lsm6dso_temperature,
+                    DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
                     DX_JSON_INT, "rssi", network_data.rssi);
 
                 if (serialization_result) {
@@ -330,6 +326,9 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
     // Bosch's formula
     altitude = 44330 * (1 - powf(((float)(pressure_kPa * 1000 / 1013.25)),
                                        (float)(1 / 5.255))); // pressure altitude in meters
+
+    // Send the latest readings up as telemetry
+    publish_message_handler();
 }
 
 
@@ -338,9 +337,9 @@ static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBin
     int sample_rate_seconds = *(int *)deviceTwinBinding->propertyValue;
 
     // validate data is sensible range before applying
-    if (sample_rate_seconds >= 0 && sample_rate_seconds <= 120) {
+    if (sample_rate_seconds >= 0 && sample_rate_seconds <= 12*60*60) {
 
-        dx_timerChange(&tmr_publish_message, &(struct timespec){sample_rate_seconds, 0});
+        dx_timerChange(&tmr_read_sensors, &(struct timespec){sample_rate_seconds, 0});
 
         dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
 
@@ -492,15 +491,6 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json
     char delay_str[] = "delayTime";
     int requested_delay_seconds;
 
-    // Allocate memory for the response message.  Note that the Azure IoT SDK will free this memory
-	static const char reboot_response[] = "{ \"success\" : true, \"message\" : \"Rebooting Device in %d seconds\"}";
-    static const char error_response[] = "{  \"success\" : true, \"message\" : \"delayTime out of range: %d}";
-    
-    // Determine size of largest response message, add 8 to cover the delay time that will be inserted into the response string
-    size_t responseLen = ((sizeof(reboot_response) < sizeof(error_response))? sizeof(error_response): sizeof(reboot_response)) + 8; 
-	*responseMsg = (char *)malloc((size_t)responseLen); 
-    memset(*responseMsg, 0, responseLen);
-
     JSON_Object *jsonObject = json_value_get_object(json);
     if (jsonObject == NULL) {
         return DX_METHOD_FAILED;
@@ -516,18 +506,32 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json
 
     if (IN_RANGE(requested_delay_seconds, 1, (12*60*60))) {
 
-        // Create Direct Method Response
-        snprintf(*responseMsg, responseLen, reboot_response, directMethodBinding->methodName, requested_delay_seconds);
-    
         // Set the timer to fire after the requested delayTime
         dx_timerOneShotSet(&tmr_reboot, &(struct timespec){requested_delay_seconds, 0});
         return DX_METHOD_SUCCEEDED;
     
     }
-
-    snprintf(*responseMsg, responseLen, error_response, requested_delay_seconds);
-    return DX_METHOD_FAILED;
+    else{
+        return DX_METHOD_FAILED;
+    }
 }
+
+/// <summary>
+///  Function for rebootDevice directMethod
+///  name: haltApplication
+///  Payload: None
+/// </summary>
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_halt_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg)
+{
+    
+    int requested_delay_seconds = HALT_APPLICATION_DELAY_TIME_SECONDS;
+    Log_Debug("Reboot Delay %d \n", requested_delay_seconds);
+
+    // Set the timer to fire after the requested delayTime
+    dx_timerOneShotSet(&tmr_reboot, &(struct timespec){requested_delay_seconds, 0});
+    return DX_METHOD_SUCCEEDED;
+}
+
 
 /// <summary>
 /// Restart the Device
@@ -540,6 +544,41 @@ static void delay_restart_timer_handler(EventLoopTimer *eventLoopTimer)
     }
 
     PowerManagement_ForceSystemReboot();
+}
+
+/// </summary>
+///  name: setSensor
+///  payload: {"pollTime": 0 > integer < 12 hours >}
+/// </summary>
+static DX_DIRECT_METHOD_RESPONSE_CODE dm_set_sensor_poll_period(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg)
+{
+    
+    char poll_str[] = "pollTime";
+    int requested_poll_time_seconds;
+
+    JSON_Object *jsonObject = json_value_get_object(json);
+    if (jsonObject == NULL) {
+        return DX_METHOD_FAILED;
+    }
+
+    // check JSON properties sent through are the correct type
+    if (!json_object_has_value_of_type(jsonObject, poll_str, JSONNumber)) {
+        return DX_METHOD_FAILED;
+    }
+
+    requested_poll_time_seconds = (int)json_object_get_number(jsonObject, poll_str);
+    Log_Debug("New Telemetry TX period %d \n", requested_poll_time_seconds);
+
+    if (IN_RANGE(requested_poll_time_seconds, 1, (12*60*60))) {
+
+        // Set the timer to fire after the requested delayTime
+        dx_timerChange(&tmr_read_sensors, &(struct timespec){requested_poll_time_seconds, 0});
+        return DX_METHOD_SUCCEEDED;
+    
+    }
+    else{
+        return DX_METHOD_FAILED;    
+    }
 }
 
 /// <summary>
