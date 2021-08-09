@@ -1,16 +1,34 @@
 {
   "SchemaVersion": 1,
-  "Name": "azure_end_to_end",
-  "ComponentId": "b217fd65-ac8d-4d7c-b62c-0d07b5df6357",
+  "Name": "AvnetSK-V2-DevX",
+  "ComponentId": "06e116bd-e3af-4bfe-a0cb-f1530b8b91ab",
   "EntryPoint": "/bin/app",
-  "CmdArgs": [ "--ScopeID", "REPLACE_WITH_YOUR_ID_SCOPE" ],
-  "Capabilities": {
-    "Gpio": [ "$NETWORK_CONNECTED_LED", "$LED2" ],
-    "AllowedConnections": [
-      "global.azure-devices-provisioning.net",
-      "REPLACE_WITH_YOUR_IOT_HUB_ENDPOINT_URL"
+  "CmdArgs": [ "--ScopeID", "0ne0008CB04" ],
+    "Capabilities": {
+      "AllowedApplicationConnections": [ "005180bc-402f-4cb3-a662-72937dbcde47" ],
+      "AllowedConnections": [
+        "global.azure-devices-provisioning.net",
+        "BW-IoTHub.azure-devices.net"
+      ],
+    "Gpio": [
+      "$SAMPLE_RGBLED_RED",
+      "$SAMPLE_RGBLED_GREEN",
+      "$SAMPLE_RGBLED_BLUE",
+      "$SAMPLE_BUTTON_1",
+      "$SAMPLE_BUTTON_2",
+      "$SAMPLE_WIFI_LED",
+      "$SAMPLE_APP_LED",
+      "$RELAY_CLICK2_RELAY1",
+      "$RELAY_CLICK2_RELAY2"
     ],
-    "DeviceAuthentication": "REPLACE_WITH_YOUR_AZURE_SPHERE_TENANT_ID"
+    "I2cMaster": [ "$SAMPLE_LSM6DSO_I2C" ],
+    "Uart": [],
+    "SpiMaster": [],
+    "WifiConfig": true,
+    "NetworkConfig": false,
+    "SystemTime": false,
+    "DeviceAuthentication": "8d34f65c-532e-4dcf-a1d6-3e811c1e5c68",
+    "PowerControls": [ "ForceReboot" ]
   },
   "ApplicationType": "Default"
 }
