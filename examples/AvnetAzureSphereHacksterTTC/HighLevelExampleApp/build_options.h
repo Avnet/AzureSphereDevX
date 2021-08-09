@@ -52,6 +52,10 @@
 #define SENSOR_READ_PERIOD_SECONDS 5
 #define SENSOR_READ_PERIOD_NANO_SECONDS 0 * 1000
 
+// Defines how often sensor data is reported
+#define TELEMETRY_SEND_PERIOD_SECONDS 30
+#define TELEMETRY_SEND_PERIOD_NANO_SECONDS 0 * 1000
+
 // Define how long after processing the haltApplication direct method before the application exits
 #define HALT_APPLICATION_DELAY_TIME_SECONDS 5
 

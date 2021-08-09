@@ -49,6 +49,8 @@
 #include <applibs/log.h>
 #include <applibs/wificonfig.h>
 #include "build_options.h"
+#include "i2c.h"
+#include "oled.h"
 
 // Make sure we're using the IOT Hub code for the PNP configuration
 #ifdef USE_PNP
@@ -63,11 +65,22 @@
 
 // Globals
 // Array with messages from Azure
-#define CLOUD_MSG_SIZE 22
-static char oled_ms1[CLOUD_MSG_SIZE];
-static char oled_ms2[CLOUD_MSG_SIZE];
-static char oled_ms3[CLOUD_MSG_SIZE];
-static char oled_ms4[CLOUD_MSG_SIZE];
+char oled_ms1[CLOUD_MSG_SIZE];
+char oled_ms2[CLOUD_MSG_SIZE];
+char oled_ms3[CLOUD_MSG_SIZE];
+char oled_ms4[CLOUD_MSG_SIZE];
+
+// Variable to hold sensor readings.  We read the sensors very quickly,
+// but only send telemetry when the send telemeter timer expires
+// Global variables to hold the most recent sensor data
+AccelerationgForce acceleration_g;
+AngularRateDegreesPerSecond angular_rate_dps;
+float lsm6dso_temperature;
+float pressure_kPa;
+float lps22hh_temperature;
+float altitude;
+network_var network_data;
+
 
 // Forward declarations
 //static DX_DIRECT_METHOD_RESPONSE_CODE LightControlHandler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
@@ -75,6 +88,7 @@ static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBin
 static void dt_gpio_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 static void publish_message_handler(EventLoopTimer *eventLoopTimer);
+static void read_sensors_handler(EventLoopTimer *eventLoopTimer);
 static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer);
 
 static void ReadWifiConfig(bool outputDebug);
@@ -83,18 +97,16 @@ DX_USER_CONFIG dx_config;
 
 /****************************************************************************************
  * Telemetry message buffer property sets
- ****************************************************************************************/
-/*
+*****************************************************************************************/
 
 // Number of bytes to allocate for the JSON telemetry message for IoT Hub/Central
-#define JSON_MESSAGE_BYTES 256
+#define JSON_MESSAGE_BYTES 512
 static char msgBuffer[JSON_MESSAGE_BYTES] = {0};
 
-static DX_MESSAGE_PROPERTY *messageProperties[] = {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "hvac"}, &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
+static DX_MESSAGE_PROPERTY *messageProperties[] = {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "SK-Demo"}, &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
                                                    &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
 
 static DX_MESSAGE_CONTENT_PROPERTIES contentProperties = {.contentEncoding = "utf-8", .contentType = "application/json"};
-*/
 
 /****************************************************************************************
  * GPIO Peripherals
@@ -149,8 +161,10 @@ static DX_DIRECT_METHOD_BINDING dm_reset_control =        {.methodName = "haltAp
 
 */
 
-static DX_TIMER_BINDING tmr_publish_message = {.period = {4, 0}, .name = "tmr_publish_message", .handler = publish_message_handler};
+static DX_TIMER_BINDING tmr_publish_message = {.period = {TELEMETRY_SEND_PERIOD_SECONDS, 0}, .name = "tmr_publish_message", .handler = publish_message_handler};
 static DX_TIMER_BINDING tmr_monitor_wifi_network = {.period = {30, 0}, .name = "tmr_monitor_wifi_network", .handler = monitor_wifi_network_handler};
+static DX_TIMER_BINDING tmr_read_sensors = {.period = {SENSOR_READ_PERIOD_SECONDS, 0}, .name = "tmr_read_sensors", .handler = read_sensors_handler};
+
 
 // All bindings referenced in the folowing binding sets are initialised in the InitPeripheralsAndHandlers function
 DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led_green, &dt_user_led_blue, &dt_wifi_led, 
@@ -160,7 +174,7 @@ DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led
 
 // DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_test, &dm_sensor_poll_control, &dm_reboot_control, &dm_reset_control};
 DX_GPIO_BINDING *gpio_bindings[] = {&buttonA, &buttonB, &userLedRed, &userLedGreen, &userLedBlue, &wifiLed, &appLed, &clickRelay1, &clickRelay2};
-DX_TIMER_BINDING *timer_bindings[] = {&tmr_publish_message, &tmr_monitor_wifi_network};
+DX_TIMER_BINDING *timer_bindings[] = {&tmr_publish_message, &tmr_monitor_wifi_network, &tmr_read_sensors};
 
 
 /****************************************************************************************
@@ -174,33 +188,82 @@ static void publish_message_handler(EventLoopTimer *eventLoopTimer)
         return;
     }
 
-/*
-    double temperature = 36.0;
-    double humidity = 55.0;
-    double pressure = 1100;
-    static int msgId = 0;
+//#define USE_IOT_CONNECT
 
-    if (dx_isAzureConnected()) {
+#ifdef IOT_HUB_APPLICATION
+#ifdef USE_IOT_CONNECT
+    // If we have not completed the IoTConnect connect sequence, then don't send telemetry
+    if(IoTCConnected){
+#endif         
 
-        // Serialize telemetry as JSON
-        bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 4, 
-            DX_JSON_INT, "MsgId", msgId++, 
-            DX_JSON_DOUBLE, "Temperature", temperature, 
-            DX_JSON_DOUBLE, "Humidity", humidity, 
-            DX_JSON_DOUBLE, "Pressure", pressure);
+        // Keep track of the first time through this code.  The LSMD6S0 returns bad data the first time
+        // we read it.  Don't send that data up in case we're charting the data.
+        static bool firstPass = true;
 
-        if (serialization_result) {
+        if(!firstPass){
 
-            Log_Debug("%s\n", msgBuffer);
+            #define JSON_BUFFER_SIZE 256
 
-            dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+            if (dx_isAzureConnected()) {
 
-        } else {
-            Log_Debug("JSON Serialization failed: Buffer too small\n");
+
+//#define USE_DEVX_SERIALIZATION
+#ifdef USE_DEVX_SERIALIZATION
+
+                // Serialize telemetry as JSON
+                bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
+                    DX_JSON_DOUBLE, "gX", acceleration_g.x,
+                    DX_JSON_DOUBLE, "gY", acceleration_g.y,
+                    DX_JSON_DOUBLE, "gZ", acceleration_g.z,
+                    DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
+                    DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
+                    DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
+                    DX_JSON_DOUBLE, "pressure", pressure_kPa,
+                    DX_JSON_DOUBLE, "light_intensity", light_sensor,
+                    DX_JSON_DOUBLE, "altitude", altitude,
+                    DX_JSON_DOUBLE, "lsm6dso_temperature", lsm6dso_temperature,
+                    DX_JSON_INT, "rssi", network_data.rssi);
+
+                if (serialization_result) {
+
+                    Log_Debug("\n%s\n", msgBuffer);
+                    dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+
+                } else {
+                    Log_Debug("JSON Serialization failed: Buffer too small\n");
+                }
+
+#else // !USE_DEVX_SERIALIZATION
+
+                snprintf(msgBuffer, sizeof(msgBuffer),
+                    "{\"gX\":%.2lf, \"gY\":%.2lf, \"gZ\":%.2lf, \"aX\": %.2f, \"aY\": "
+                    "%.2f, \"aZ\": %.2f, \"pressure\": %.2f, \"light_intensity\": %.2f, "
+                    "\"altitude\": %.2f, \"temp\": %.2f,  \"rssi\": %d}",
+                    acceleration_g.x, acceleration_g.y, acceleration_g.z, angular_rate_dps.x,
+                    angular_rate_dps.y, angular_rate_dps.z, pressure_kPa, light_sensor, altitude,
+                    lsm6dso_temperature, network_data.rssi);                
+
+                    Log_Debug("\n%s\n", msgBuffer);
+                    dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+#endif                     
+            }
         }
+    else{
+        // It is the first pass, flip the flag
+        firstPass = false;
+
+        // On the first pass set the OLED screen to the Avnet graphic!
+#ifdef OLED_SD1306
+    	oled_state = OLED_NUM_SCREEN;
+#endif 
+        }
+#ifdef USE_IOT_CONNECT        
     }
-*/    
+#endif // USE_IOT_CONNECT
+#endif // IOT_HUB_APPLICATION    
+
 }
+
 
 static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
 {
@@ -211,6 +274,63 @@ static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
     }
 
     ReadWifiConfig(true);
+}
+
+static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
+{
+
+    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
+        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        return;
+    }
+
+    acceleration_g = lp_get_acceleration();
+    Log_Debug("\nLSM6DSO: Acceleration [g]  : %.4lf, %.4lf, %.4lf\n", acceleration_g.x,
+              acceleration_g.y, acceleration_g.z);
+
+    angular_rate_dps = lp_get_angular_rate();
+    Log_Debug("LSM6DSO: Angular rate [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
+              angular_rate_dps.y, angular_rate_dps.z);
+
+    lsm6dso_temperature = lp_get_temperature();
+    Log_Debug("LSM6DSO: Temperature1 [degC]: %.2f\n", lsm6dso_temperature);
+
+  	if (lps22hhDetected) {
+
+        pressure_kPa = lp_get_pressure();
+        lps22hh_temperature = lp_get_temperature_lps22h();
+    
+		Log_Debug("LPS22HH: Pressure     [kPa] : %.2f\n", pressure_kPa);
+        Log_Debug("LPS22HH: Temperature2 [degC]: %.2f\n", lps22hh_temperature);
+    }
+    // LPS22HH was not detected
+    else {
+
+        Log_Debug("LPS22HH: Pressure     [kPa] : Not read!\n");
+        Log_Debug("LPS22HH: Temperature  [degC]: Not read!\n");
+    }
+
+#ifdef M4_INTERCORE_COMMS
+    Log_Debug("ALSPT19: Ambient Light[Lux] : %.2f\r\n", light_sensor);
+#endif
+
+    // Read the current wifi configuration
+    ReadWifiConfig(false);
+
+    // The ALTITUDE value calculated is actually "Pressure Altitude". This lacks correction for
+    // temperature (and humidity)
+    // "pressure altitude" calculator located at:
+    // https://www.weather.gov/epz/wxcalc_pressurealtitude "pressure altitude" formula is defined
+    // at: https://www.weather.gov/media/epz/wxcalc/pressureAltitude.pdf altitude in feet =
+    // 145366.45 * (1 - (hPa / 1013.25) ^ 0.190284) feet altitude in meters = 145366.45 * 0.3048 *
+    // (1 - (hPa / 1013.25) ^ 0.190284) meters
+    //
+    // weather.com formula
+    // altitude = 44307.69396 * (1 - powf((atm / 1013.25), 0.190284));  // pressure altitude in
+    // meters
+    // Bosch's formula
+    altitude = 44330 * (1 - powf(((float)(pressure_kPa * 1000 / 1013.25)),
+                                       (float)(1 / 5.255))); // pressure altitude in meters
 }
 
 
@@ -303,69 +423,8 @@ static void NetworkConnectionState(bool connected)
     Log_Debug("New connection state: %s\n", connected ? "Connected": "Not Connected");
 }
 
-/// <summary>
-///  Initialize peripherals, device twins, direct methods, timer_bindings.
-/// </summary>
-static void InitPeripheralsAndHandlers(void)
-{
-    dx_azureConnect(&dx_config, NETWORK_INTERFACE, IOT_PLUG_AND_PLAY_MODEL_ID);
-    dx_gpioSetOpen(gpio_bindings, NELEMS(gpio_bindings));
-    dx_timerSetStart(timer_bindings, NELEMS(timer_bindings));
-    dx_deviceTwinSubscribe(device_twin_bindings, NELEMS(device_twin_bindings));
-//    dx_directMethodSubscribe(direct_method_bindings, NELEMS(direct_method_bindings));
-
-    dx_azureRegisterConnectionChangedNotification(NetworkConnectionState);
-}
-
-/// <summary>
-///     Close peripherals and handlers.
-/// </summary>
-static void ClosePeripheralsAndHandlers(void)
-{
-    dx_timerSetStop(timer_bindings, NELEMS(timer_bindings));
-    dx_deviceTwinUnsubscribe();
-    dx_directMethodUnsubscribe();
-    dx_gpioSetClose(gpio_bindings, NELEMS(gpio_bindings));
-    dx_timerEventLoopStop();
-}
-
-int main(int argc, char *argv[])
-{
-    dx_registerTerminationHandler();
-
-    Log_Debug("Avnet Starter Kit Simple Reference Application starting.\n");
-
-    if (!dx_configParseCmdLineArguments(argc, argv, &dx_config)) {
-        return dx_getTerminationExitCode();
-    }
-
-    InitPeripheralsAndHandlers();
-
-    // Main loop
-    while (!dx_isTerminationRequired()) {
-        int result = EventLoop_Run(dx_timerGetEventLoop(), -1, true);
-        // Continue if interrupted by signal, e.g. due to breakpoint being set.
-        if (result == -1 && errno != EINTR) {
-            dx_terminate(DX_ExitCode_Main_EventLoopFail);
-        }
-    }
-
-    ClosePeripheralsAndHandlers();
-    Log_Debug("Application exiting.\n");
-    return dx_getTerminationExitCode();
-}
-
 // Read the current wifi configuration, output it to debug and send it up as device twin data
 static void ReadWifiConfig(bool outputDebug){
-
-    typedef struct
-    {
-        uint8_t SSID[WIFICONFIG_SSID_MAX_LENGTH];
-        uint32_t frequency_MHz;
-        int8_t rssi;
-    } network_var;
-
-    static network_var network_data;
 
     #define BSSID_SIZE 20
     char bssid[BSSID_SIZE];
@@ -422,4 +481,62 @@ static void ReadWifiConfig(bool outputDebug){
             }
         }
     }
+}
+
+/// <summary>
+///  Initialize peripherals, device twins, direct methods, timer_bindings.
+/// </summary>
+static void InitPeripheralsAndHandlers(void)
+{
+    dx_azureConnect(&dx_config, NETWORK_INTERFACE, IOT_PLUG_AND_PLAY_MODEL_ID);
+    dx_gpioSetOpen(gpio_bindings, NELEMS(gpio_bindings));
+    dx_timerSetStart(timer_bindings, NELEMS(timer_bindings));
+    dx_deviceTwinSubscribe(device_twin_bindings, NELEMS(device_twin_bindings));
+//    dx_directMethodSubscribe(direct_method_bindings, NELEMS(direct_method_bindings));
+
+    dx_azureRegisterConnectionChangedNotification(NetworkConnectionState);
+
+    // Initialize the i2c sensors
+    lp_imu_initialize();
+
+}
+
+/// <summary>
+///     Close peripherals and handlers.
+/// </summary>
+static void ClosePeripheralsAndHandlers(void)
+{
+    dx_timerSetStop(timer_bindings, NELEMS(timer_bindings));
+    dx_deviceTwinUnsubscribe();
+    dx_directMethodUnsubscribe();
+    dx_gpioSetClose(gpio_bindings, NELEMS(gpio_bindings));
+    dx_timerEventLoopStop();
+    void lp_imu_close(void);
+
+}
+
+int main(int argc, char *argv[])
+{
+    dx_registerTerminationHandler();
+
+    Log_Debug("Avnet Starter Kit Simple Reference Application starting.\n");
+
+    if (!dx_configParseCmdLineArguments(argc, argv, &dx_config)) {
+        return dx_getTerminationExitCode();
+    }
+
+    InitPeripheralsAndHandlers();
+
+    // Main loop
+    while (!dx_isTerminationRequired()) {
+        int result = EventLoop_Run(dx_timerGetEventLoop(), -1, true);
+        // Continue if interrupted by signal, e.g. due to breakpoint being set.
+        if (result == -1 && errno != EINTR) {
+            dx_terminate(DX_ExitCode_Main_EventLoopFail);
+        }
+    }
+
+    ClosePeripheralsAndHandlers();
+    Log_Debug("Application exiting.\n");
+    return dx_getTerminationExitCode();
 }
