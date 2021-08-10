@@ -50,6 +50,7 @@
 #include <applibs/wificonfig.h>
 #include <applibs/powermanagement.h>
 #include "build_options.h"
+#include "exit_codes.h"
 #include "i2c.h"
 #include "oled.h"
 
@@ -97,9 +98,12 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_set_sensor_poll_period(JSON_Value *json
 static DX_DIRECT_METHOD_RESPONSE_CODE dm_halt_device_handler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
 #ifdef OLED_SD1306
 static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer);
-#endif OLED_SD1306
+#endif // OLED_SD1306
 static void ReadWifiConfig(bool outputDebug);
 static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer);
+static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type button_state);
+static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key);
+
 
 DX_USER_CONFIG dx_config;
 
@@ -273,7 +277,7 @@ static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
 {
 
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        dx_terminate(ExitCode_ConsumeEventLoopWifiMonitor);
         return;
     }
 
@@ -284,7 +288,7 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
 {
 
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        dx_terminate(ExitCode_ConsumeEventLoopReadSensors);
         return;
     }
 
@@ -547,7 +551,7 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_halt_device_handler(JSON_Value *json, D
 static void delay_restart_timer_handler(EventLoopTimer *eventLoopTimer)
 {
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        dx_terminate(ExitCode_ConsumeEventLoopRestart);
         return;
     }
 
@@ -598,106 +602,76 @@ static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer)
     static GPIO_Value_Type buttonAState = GPIO_Value_High;
     static GPIO_Value_Type buttonBState = GPIO_Value_High;
 
-    // Flags used to determine if we need to send a telemetry update or not
-   	bool sendTelemetryButtonA = false;
-	bool sendTelemetryButtonB = false;
+    // Variables for the current state
+    GPIO_Value_Type button_a_state;
+    GPIO_Value_Type button_b_state;
 
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        dx_terminate(ExitCode_ConsumeEventButtonHandler);
         return;
     }
 
     // Read both button states
-    GPIO_Value_Type button_a_state = dx_gpioReadState(&buttonA);
-    GPIO_Value_Type button_b_state = dx_gpioReadState(&buttonB);
+    if(GPIO_GetValue(buttonA.fd, &button_a_state) < 0){
+        Log_Debug("ERROR: buttonA read: errno=%d (%s)\n", errno, strerror(errno));
+        dx_terminate(ExitCode_ReadButtonAError);
+        return;
+    }
 
-    // Did buttonA state change?
-    if(button_a_state != buttonAState){
+    if(GPIO_GetValue(buttonB.fd, &button_b_state) < 0){
+        Log_Debug("ERROR: buttonB read: errno=%d (%s)\n", errno, strerror(errno));
+        dx_terminate(ExitCode_ReadButtonBError);
+        return;
+    }
+
+    ProcessButtonState(button_a_state, &buttonAState, "buttonA");
+    ProcessButtonState(button_b_state, &buttonBState, "buttonB");
+}
+
+static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key){
+        // Did buttonA state change?
+    if(new_state != *old_state){
 
         // Update our local copy
-        buttonAState = button_a_state;
-        sendTelemetryButtonA = true;
+        *old_state = new_state;
 
-        if(button_a_state == GPIO_Value_Low){
-            Log_Debug("Button A pressed!\n");
-
+        if(new_state == GPIO_Value_Low){
             // Use buttonA presses to drive OLED to display the previous screen     
 		    oled_state = (--oled_state < 0)? OLED_NUM_SCREEN: oled_state;
-            Log_Debug("OledState: %d\n", oled_state);
-
         }
-        else{
-            Log_Debug("Button A released!\n");
-        }
+        // else the button was released
 
+        // The button state changed, send up the current button state as telemetry
+        Log_Debug("%s %s!\n", telemetry_key, (new_state == GPIO_Value_Low) ? "Pressed": "Released");
+        SendButtonTelemetry(telemetry_key, new_state);
     }
+}
 
-    // Did buttonB state change?
-    if(button_b_state != buttonBState){
+/// <summary>
+/// Send button telemetry
+/// </summary>
+static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type button_state){
 
-        // Update our local copy
-        buttonBState = button_b_state;
-        sendTelemetryButtonB = true;
+    // Serialize telemetry as JSON
+    bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 1, 
+        DX_JSON_INT, telemetry_key, (button_state == GPIO_Value_Low) ? 1: 0);
 
-        if(button_b_state == GPIO_Value_Low){
-            Log_Debug("Button A pressed!\n");
+    if (serialization_result) {
 
-            // Use buttonB presses to drive OLED to display the next screen     
-		    oled_state = (++oled_state > OLED_NUM_SCREEN)? 0 : oled_state;
-            Log_Debug("OledState: %d\n", oled_state);
+        Log_Debug("%s\n", msgBuffer);
+        dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
 
-        }
-        else{
-            Log_Debug("Button A released!\n");
-        }
-    }
-
-    if(sendTelemetryButtonA){
-
-        // Serialize telemetry as JSON
-        bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 1, 
-            DX_JSON_INT, "buttonA", button_a_state == GPIO_Value_Low? 1: 0);
-
-        if (serialization_result) {
-
-            Log_Debug("%s\n", msgBuffer);
-            dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
-
-        } else {
-            Log_Debug("JSON Serialization failed\n");
-        }
-    }
-
-    if(sendTelemetryButtonB){
-
-        // Serialize telemetry as JSON
-        bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 1, 
-            DX_JSON_INT, "buttonB", button_b_state == GPIO_Value_Low? 1: 0);
-
-        if (serialization_result) {
-
-            Log_Debug("%s\n", msgBuffer);
-            dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
-
-        } else {
-            Log_Debug("JSON Serialization failed\n");
-        }
+    } else {
+        Log_Debug("JSON Serialization failed\n");
     }
 }
 
 #ifdef OLED_SD1306
 static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer)
 {
-    // Assume the device comes up with the buttons at rest
-    static GPIO_Value_Type buttonAState = GPIO_Value_High;
-    static GPIO_Value_Type buttonBState = GPIO_Value_High;
-
-    // Flags used to determine if we need to send a telemetry update or not
-   	bool sendTelemetryButtonA = false;
-	bool sendTelemetryButtonB = false;
 
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(DX_ExitCode_ConsumeEventLoopTimeEvent);
+        dx_terminate(ExitCode_ConsumeEventOledHandler);
         return;
     }
 
@@ -705,7 +679,6 @@ static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer)
 	update_oled();
 }
 #endif 
-
 
 /// <summary>
 ///  Initialize peripherals, device twins, direct methods, timer_bindings.
