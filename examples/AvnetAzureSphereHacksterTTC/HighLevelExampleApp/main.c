@@ -1,25 +1,12 @@
 /* Copyright (c) Avnet Incorporated. All rights reserved.
  *   Licensed under the MIT License. 
  *
- *   DISCLAIMER
- *
- *   The DevX library supports the Azure Sphere Developer Learning Path:
- *
- *	   1. are built from the Azure Sphere SDK Samples at
- *          https://github.com/Azure/azure-sphere-samples
- *	   2. are not intended as a substitute for understanding the Azure Sphere SDK Samples.
- *	   3. aim to follow best practices as demonstrated by the Azure Sphere SDK Samples.
- *	   4. are provided as is and as a convenience to aid the Azure Sphere Developer Learning
- *          experience.
- *
  *   DEVELOPER BOARD SELECTION
  *
  *   The following developer boards are supported.
  *
  *	   1. AVNET Azure Sphere Starter Kit.
  *     2. AVNET Azure Sphere Starter Kit Revision 2.
- *	   3. Seeed Studio Azure Sphere MT3620 Development Kit aka Reference Design Board or rdb.
- *	   4. Seeed Studio Seeed Studio MT3620 Mini Dev Board.
  *
  *   ENABLE YOUR DEVELOPER BOARD
  *
@@ -36,7 +23,9 @@
  ************************************************************************************************/
 
 #include "hw/sample_appliance.h" // Hardware definition
+#include "build_options.h"
 
+// DevX libraries
 #include "dx_azure_iot.h"
 #include "dx_config.h"
 #include "dx_exit_codes.h"
@@ -45,25 +34,25 @@
 #include "dx_timer.h"
 #include "dx_utilities.h"
 #include "dx_version.h"
+#ifdef M4_INTERCORE_COMMS
+#include "dx_intercore.h"
+#endif // M4_INTERCORE_COMMS
+
+// Azure Sphere SDK libraries
 #include "applibs_versions.h"
 #include <applibs/log.h>
 #include <applibs/wificonfig.h>
 #include <applibs/powermanagement.h>
-#include "build_options.h"
+
+// Local header files
 #include "app_exit_codes.h"
 #include "i2c.h"
+#ifdef OLED_SD1306
 #include "oled.h"
+#endif // OLED_SD1306
 #ifdef M4_INTERCORE_COMMS
-#include "dx_intercore.h"
 #include "als_pt19_light_sensor.h"
 #endif // M4_INTERCORE_COMMS
-
-// Make sure we're using the IOT Hub code for the PNP configuration
-#ifdef USE_PNP
-#define IOT_PLUG_AND_PLAY_MODEL_ID "dtmi:avnet:mt3620Starterkit;1"
-#else
-#define IOT_PLUG_AND_PLAY_MODEL_ID ""
-#endif
 
 #define NETWORK_INTERFACE "wlan0"
 #define SAMPLE_VERSION_NUMBER "1.0"
@@ -75,6 +64,8 @@ char oled_ms1[CLOUD_MSG_SIZE];
 char oled_ms2[CLOUD_MSG_SIZE];
 char oled_ms3[CLOUD_MSG_SIZE];
 char oled_ms4[CLOUD_MSG_SIZE];
+
+bool sensor_debug_enabled = true;
 
 // Global variables to hold sensor readings.  We read the sensors very 
 // quickly, but only send telemetry when the send telemeter timer expires
@@ -106,6 +97,7 @@ static void ReadWifiConfig(bool outputDebug);
 static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer);
 static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type button_state);
 static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key);
+static void dt_debug_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 #ifdef M4_INTERCORE_COMMS
 static void alsPt19_receive_msg_handler(void *data_block, ssize_t message_length);
 #endif // M4_INTERCORE_COMMS
@@ -155,6 +147,7 @@ static DX_DEVICE_TWIN_BINDING dt_oled_line1 =          {.propertyName = "OledDis
 static DX_DEVICE_TWIN_BINDING dt_oled_line2 =          {.propertyName = "OledDisplayMsg2", .twinType = DX_DEVICE_TWIN_STRING, .handler = dt_oled_message_handler, .context = oled_ms2 };
 static DX_DEVICE_TWIN_BINDING dt_oled_line3 =          {.propertyName = "OledDisplayMsg3", .twinType = DX_DEVICE_TWIN_STRING, .handler = dt_oled_message_handler, .context = oled_ms3 };
 static DX_DEVICE_TWIN_BINDING dt_oled_line4 =          {.propertyName = "OledDisplayMsg4", .twinType = DX_DEVICE_TWIN_STRING, .handler = dt_oled_message_handler, .context = oled_ms4 };
+static DX_DEVICE_TWIN_BINDING dt_enable_debug =        {.propertyName = "enableDebug",     .twinType = DX_DEVICE_TWIN_BOOL,   .handler = dt_debug_handler};	
 
 // Read only Device Twin Bindings
 static DX_DEVICE_TWIN_BINDING dt_version_string = {.propertyName = "versionString", .twinType = DX_DEVICE_TWIN_STRING};
@@ -204,8 +197,9 @@ DX_INTERCORE_BINDING intercore_alsPt19_light_sensor = {
 // All bindings referenced in the folowing binding sets are initialised in the InitPeripheralsAndHandlers function
 DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led_green, &dt_user_led_blue, &dt_wifi_led, 
                                                   &dt_app_led, &dt_relay1, &dt_relay2, &dt_desired_sample_rate, &dt_oled_line1, 
-                                                  &dt_oled_line2, &dt_oled_line3, &dt_oled_line4,
-                                                  &dt_version_string, &dt_manufacturer, &dt_model, &dt_ssid, &dt_freq, &dt_bssid};
+                                                  &dt_oled_line2, &dt_oled_line3, &dt_oled_line4, &dt_version_string, 
+                                                  &dt_manufacturer, &dt_model, &dt_ssid, &dt_freq, &dt_bssid,
+                                                  &dt_enable_debug};
 
 DX_DIRECT_METHOD_BINDING *direct_method_bindings[] = {&dm_reboot_control, &dm_sensor_poll_time, &dm_halt_control};
 DX_GPIO_BINDING *gpio_bindings[] = {&buttonA, &buttonB, &userLedRed, &userLedGreen, &userLedBlue, &wifiLed, &appLed, &clickRelay1, &clickRelay2};
@@ -232,6 +226,7 @@ static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
 
 static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
 {
+    static bool firstPass = true;
 
     if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
         dx_terminate(ExitCode_ConsumeEventLoopReadSensors);
@@ -248,6 +243,17 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
     dx_intercorePublish(&intercore_alsPt19_light_sensor, &ic_control_block_alsPt19_light_sensor,
                             sizeof(IC_COMMAND_BLOCK_ALS_PT19));
 #endif
+
+    if(firstPass){
+#ifdef OLED_SD1306
+        // Transition the OLED to the Avnet Logo screen
+        oled_state = LOGO;
+#endif 
+        // Set the flag to false and return without displaying the sensor data or sending sensor telemetry
+        firstPass = false;
+        return;
+    }
+
     // The ALTITUDE value calculated is actually "Pressure Altitude". This lacks correction for
     // temperature (and humidity)
     // "pressure altitude" calculator located at:
@@ -263,28 +269,33 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
     altitude = 44330 * (1 - powf(((float)(pressure_kPa * 1000 / 1013.25)),
                                        (float)(1 / 5.255))); // pressure altitude in meters
 
-    Log_Debug("\nLSM6DSO: Acceleration [g]  : %.4lf, %.4lf, %.4lf\n", acceleration_g.x,
-              acceleration_g.y, acceleration_g.z);
-    Log_Debug("LSM6DSO: Angular rate [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
-              angular_rate_dps.y, angular_rate_dps.z);
-    Log_Debug("LSM6DSO: Temperature1 [degC]: %.2f\n", lsm6dso_temperature);
-    Log_Debug("ALSPT19: Ambient Light[Lux] : %.2f\r\n", light_sensor);
-
+    if(sensor_debug_enabled){
+        Log_Debug("\nLSM6DSO: Acceleration      [g]   : %.4lf, %.4lf, %.4lf\n", acceleration_g.x,
+                acceleration_g.y, acceleration_g.z);
+        Log_Debug("LSM6DSO: Angular rate      [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
+                angular_rate_dps.y, angular_rate_dps.z);
+        Log_Debug("LSM6DSO: Temperature1      [degC]: %.2f\n", lsm6dso_temperature);
+        Log_Debug("ALSPT19: Ambient Light     [Lux] : %.2f\r\n", light_sensor);
+    }
   	if (lps22hhDetected) {
 
         pressure_kPa = lp_get_pressure();
         lps22hh_temperature = lp_get_temperature_lps22h();
-    
-		Log_Debug("LPS22HH: Pressure     [kPa] : %.2f\n", pressure_kPa);
-        Log_Debug("LPS22HH: Pressure Altitude [m] : %.2f\n", altitude);
-        Log_Debug("LPS22HH: Temperature2 [degC]: %.2f\n", lps22hh_temperature);
+        
+        if(sensor_debug_enabled){
+            Log_Debug("LPS22HH: Pressure          [kPa] : %.2f\n", pressure_kPa);
+            Log_Debug("LPS22HH: Pressure Altitude [m]   : %.2f\n", altitude);
+            Log_Debug("LPS22HH: Temperature2      [degC]: %.2f\n", lps22hh_temperature);
+        }
     }
     // LPS22HH was not detected
     else {
 
-        Log_Debug("LPS22HH: Pressure     [kPa] : Not read!\n");
-        Log_Debug("LPS22HH: Pressure Altitude [m] : Not calculated!\n");
-        Log_Debug("LPS22HH: Temperature  [degC]: Not read!\n");
+       if(sensor_debug_enabled){
+            Log_Debug("LPS22HH: Pressure          [kPa] : Not read!\n");
+            Log_Debug("LPS22HH: Pressure Altitude [m]   : Not calculated!\n");
+            Log_Debug("LPS22HH: Temperature       [degC]: Not read!\n");
+       }
     }
 
     // Send the latest readings up as telemetry
@@ -293,65 +304,51 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
 
 static void publish_message_handler(void)
 {
+
 #ifdef IOT_HUB_APPLICATION
 #ifdef USE_IOT_CONNECT
     // If we have not completed the IoTConnect connect sequence, then don't send telemetry
-    if(IoTCConnected){
+    if(true){// IoTCConnected){
 #endif         
-        // Keep track of the first time through this code.  The LSMD6S0 returns bad data the first time
-        // we read it.  Don't send that data up in case we're charting the data.
-        static bool firstPass = true;
-
-        if(!firstPass){
-            if (dx_isAzureConnected()) {
+        if (dx_isAzureConnected()) {
 
 #ifdef USE_DEVX_SERIALIZATION
-                // Serialize telemetry as JSON
-                bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
-                    DX_JSON_DOUBLE, "gX", acceleration_g.x,
-                    DX_JSON_DOUBLE, "gY", acceleration_g.y,
-                    DX_JSON_DOUBLE, "gZ", acceleration_g.z,
-                    DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
-                    DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
-                    DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
-                    DX_JSON_DOUBLE, "pressure", pressure_kPa,
-                    DX_JSON_DOUBLE, "light_intensity", light_sensor,
-                    DX_JSON_DOUBLE, "altitude", altitude,
-                    DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
-                    DX_JSON_INT, "rssi", network_data.rssi);
+            // Serialize telemetry as JSON
+            bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
+                DX_JSON_DOUBLE, "gX", acceleration_g.x,
+                DX_JSON_DOUBLE, "gY", acceleration_g.y,
+                DX_JSON_DOUBLE, "gZ", acceleration_g.z,
+                DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
+                DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
+                DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
+                DX_JSON_DOUBLE, "pressure", pressure_kPa,
+                DX_JSON_DOUBLE, "light_intensity", light_sensor,
+                DX_JSON_DOUBLE, "altitude", altitude,
+                DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
+                DX_JSON_INT, "rssi", network_data.rssi);
 
-                if (serialization_result) {
+            if (serialization_result) {
 
-                    Log_Debug("\n%s\n", msgBuffer);
-                    dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+                Log_Debug("%s\n", msgBuffer);
+                dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
 
-                } else {
-                    Log_Debug("JSON Serialization failed: Buffer too small\n");
-                }
+            } else {
+                Log_Debug("JSON Serialization failed: Buffer too small\n");
+            }
 #else // !USE_DEVX_SERIALIZATION
 
-                snprintf(msgBuffer, sizeof(msgBuffer),
-                    "{\"gX\":%.2lf, \"gY\":%.2lf, \"gZ\":%.2lf, \"aX\": %.2f, \"aY\": "
-                    "%.2f, \"aZ\": %.2f, \"pressure\": %.2f, \"light_intensity\": %.2f, "
-                    "\"altitude\": %.2f, \"temp\": %.2f,  \"rssi\": %d}",
-                    acceleration_g.x, acceleration_g.y, acceleration_g.z, angular_rate_dps.x,
-                    angular_rate_dps.y, angular_rate_dps.z, pressure_kPa, light_sensor, altitude,
-                    lsm6dso_temperature, network_data.rssi);                
+            snprintf(msgBuffer, sizeof(msgBuffer),
+                "{\"gX\":%.2lf, \"gY\":%.2lf, \"gZ\":%.2lf, \"aX\": %.2f, \"aY\": "
+                "%.2f, \"aZ\": %.2f, \"pressure\": %.2f, \"light_intensity\": %.2f, "
+                "\"altitude\": %.2f, \"temp\": %.2f,  \"rssi\": %d}",
+                acceleration_g.x, acceleration_g.y, acceleration_g.z, angular_rate_dps.x,
+                angular_rate_dps.y, angular_rate_dps.z, pressure_kPa, light_sensor, altitude,
+                lsm6dso_temperature, network_data.rssi);                
 
-                    Log_Debug("\n%s\n", msgBuffer);
-                    dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+                Log_Debug("%s\n", msgBuffer);
+                dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
 #endif                     
             }
-        }
-    else{
-        // It is the first pass, flip the flag
-        firstPass = false;
-
-        // On the first pass set the OLED screen to the Avnet graphic!
-#ifdef OLED_SD1306
-    	oled_state = OLED_NUM_SCREEN;
-#endif 
-        }
 #ifdef USE_IOT_CONNECT        
     }
 #endif // USE_IOT_CONNECT
@@ -363,30 +360,43 @@ static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBin
     int sample_rate_seconds = *(int *)deviceTwinBinding->propertyValue;
 
     // validate data is sensible range before applying
-    if (sample_rate_seconds >= 0 && sample_rate_seconds <= 12*60*60) {
+    if (IN_RANGE(sample_rate_seconds, 1, 12*60*60)){ // 1 second to 10 hours
 
         dx_timerChange(&tmr_read_sensors, &(struct timespec){sample_rate_seconds, 0});
 
+#ifdef USE_PNP
         dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+#else
+        dx_deviceTwinReportValue(deviceTwinBinding, deviceTwinBinding->propertyValue);
+#endif // USE_PNP
 
     } else {
+#ifdef USE_PNP
         dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_ERROR);
+#endif // USE_PNP
+
     }
 }
 
 static void dt_gpio_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
 {
     bool gpio_level = *(bool *)deviceTwinBinding->propertyValue;
-    DX_GPIO_BINDING *gpio = (DX_GPIO_BINDING*)deviceTwinBinding->context;
-    
-    if(gpio_level){
-        dx_gpioOn(gpio);
-    }
-    else{
-        dx_gpioOff(gpio);
-    }
 
-    dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+    if(deviceTwinBinding->context != NULL){
+        DX_GPIO_BINDING *gpio = (DX_GPIO_BINDING*)deviceTwinBinding->context;
+        
+        if(gpio_level){
+            dx_gpioOn(gpio);
+        }
+        else{
+            dx_gpioOff(gpio);
+        }
+#ifdef USE_PNP
+        dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+#else
+        dx_deviceTwinReportValue(deviceTwinBinding, deviceTwinBinding->propertyValue);
+#endif // USE_PNP
+    }
 }
 
 static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
@@ -402,7 +412,11 @@ static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
         // Is the message size less than the destination buffer size and printable characters
         if (strlen(new_message) < CLOUD_MSG_SIZE && dx_isStringPrintable(new_message)) {
             strncpy(ptr_oled_variable, new_message, CLOUD_MSG_SIZE);
+#ifdef USE_PNP
             dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+#else
+            dx_deviceTwinReportValue(deviceTwinBinding, deviceTwinBinding->propertyValue);
+#endif // USE_PNP
         } else {
             message_processed = false;
         }
@@ -414,9 +428,23 @@ static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
     if (!message_processed){
 
         Log_Debug("Local copy failed. String too long or invalid data\n");
+#ifdef USE_PNP
         dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_ERROR);
+#endif // USE_PNP        
     }
 }
+
+static void dt_debug_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
+{
+    sensor_debug_enabled = *(bool*)deviceTwinBinding->propertyValue;
+#ifdef USE_PNP
+        dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
+#else
+        dx_deviceTwinReportValue(deviceTwinBinding, deviceTwinBinding->propertyValue);
+#endif // USE_PNP
+
+}
+
 
 static void NetworkConnectionState(bool connected)
 {
@@ -517,8 +545,6 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_restart_device_handler(JSON_Value *json
     }
 
     requested_delay_seconds = (int)json_object_get_number(jsonObject, delay_str);
-    Log_Debug("Reboot Delay %d \n", requested_delay_seconds);
-
     if (IN_RANGE(requested_delay_seconds, 1, (12*60*60))) {
 
         // Set the timer to fire after the requested delayTime
@@ -540,7 +566,6 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_halt_device_handler(JSON_Value *json, D
 {
     
     int requested_delay_seconds = HALT_APPLICATION_DELAY_TIME_SECONDS;
-    Log_Debug("Reboot Delay %d \n", requested_delay_seconds);
 
     // Set the timer to fire after the requested delayTime
     dx_timerOneShotSet(&tmr_reboot, &(struct timespec){requested_delay_seconds, 0});
@@ -581,8 +606,6 @@ static DX_DIRECT_METHOD_RESPONSE_CODE dm_set_sensor_poll_period(JSON_Value *json
     }
 
     requested_poll_time_seconds = (int)json_object_get_number(jsonObject, poll_str);
-    Log_Debug("New Telemetry TX period %d \n", requested_poll_time_seconds);
-
     if (IN_RANGE(requested_poll_time_seconds, 1, (12*60*60))) {
 
         // Set the timer to fire after the requested delayTime
@@ -631,20 +654,34 @@ static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer)
 }
 
 static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key){
-        // Did buttonA state change?
+
+    // Did button state change?
     if(new_state != *old_state){
 
         // Update our local copy
         *old_state = new_state;
 
+        // Check to see is the change is a button press
         if(new_state == GPIO_Value_Low){
-            // Use buttonA presses to drive OLED to display the previous screen     
-		    oled_state = (--oled_state < 0)? OLED_NUM_SCREEN: oled_state;
+
+#ifdef OLED_SD1306
+            if(strncmp(telemetry_key, "buttonA", 7) == 0){
+                // Use buttonA presses to drive OLED to display the previous screen     
+                oled_state = (--oled_state < 0)? OLED_NUM_SCREEN : oled_state;
+            }
+            else{
+                // Use buttonB presses to drive OLED to display the nexts screen     
+                oled_state = (++oled_state > OLED_NUM_SCREEN)? 0 : oled_state;
+            }
+#endif // OLED_SD1306
+
         }
         // else the button was released
 
         // The button state changed, send up the current button state as telemetry
-        Log_Debug("%s %s!\n", telemetry_key, (new_state == GPIO_Value_Low) ? "Pressed": "Released");
+        if(sensor_debug_enabled){
+            Log_Debug("%s %s!\n", telemetry_key, (new_state == GPIO_Value_Low) ? "Pressed": "Released");
+        }
         SendButtonTelemetry(telemetry_key, new_state);
     }
 }
@@ -682,6 +719,7 @@ static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer)
 }
 #endif 
 
+#ifdef M4_INTERCORE_COMMS
 /// <summary>
 /// alsPt19_receive_msg_handler()
 /// This handler is called when the high level application receives a raw data read response from the 
@@ -707,18 +745,19 @@ static void alsPt19_receive_msg_handler(void *data_block, ssize_t message_length
             break;
     }
 }
-
+#endif // M4_INTERCORE_COMMS
 /// <summary>
 ///  Initialize peripherals, device twins, direct methods, timer_bindings.
 /// </summary>
 static void InitPeripheralsAndHandlers(void)
 {
+#ifdef IOT_HUB_APPLICATION
     dx_azureConnect(&dx_config, NETWORK_INTERFACE, IOT_PLUG_AND_PLAY_MODEL_ID);
+#endif // IOT_HUB_APPLICATION    
     dx_gpioSetOpen(gpio_bindings, NELEMS(gpio_bindings));
     dx_timerSetStart(timer_bindings, NELEMS(timer_bindings));
     dx_deviceTwinSubscribe(device_twin_bindings, NELEMS(device_twin_bindings));
     dx_directMethodSubscribe(direct_method_bindings, NELEMS(direct_method_bindings));
-
     dx_azureRegisterConnectionChangedNotification(NetworkConnectionState);
 
     // Initialize the i2c sensors
@@ -742,7 +781,7 @@ static void ClosePeripheralsAndHandlers(void)
     dx_directMethodUnsubscribe();
     dx_gpioSetClose(gpio_bindings, NELEMS(gpio_bindings));
     dx_timerEventLoopStop();
-    void lp_imu_close(void);
+    lp_imu_close();
 
 }
 

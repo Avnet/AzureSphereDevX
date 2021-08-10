@@ -20,5 +20,5 @@ typedef enum {
     ExitCode_ReadButtonAError            = 5,
     ExitCode_ReadButtonBError            = 6,   
     ExitCode_ConsumeEventOledHandler     = 7,
-    ExitCode_rtAppInitFailed             = 8
+    ExitCode_rtAppInitFailed             = 8 // Is the real time application sidloaded onto the device?
 } App_Exit_Code;

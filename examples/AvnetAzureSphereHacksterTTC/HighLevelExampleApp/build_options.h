@@ -3,7 +3,7 @@
 #define BUILD_OPTIONS_H
 
 // If your application is going to connect straight to a IoT Hub or IoT Connect, then enable this define.
-#define IOT_HUB_APPLICATION
+//#define IOT_HUB_APPLICATION
 
 #if !defined(IOT_HUB_APPLICATION)
 //#warning "Building application for no cloud connectivity"
@@ -19,8 +19,10 @@
 // Make sure we're using the IOT Hub code for the PNP configuration
 #ifdef USE_PNP
 #define IOT_HUB_APPLICATION
-#define IOT_PLUG_AND_PLAY_MODEL_ID "dtmi:avnet:mt3620Starterkit;1" // https://docs.microsoft.com/en-us/azure/iot-pnp/overview-iot-plug-and-play 
-#endif 
+#define IOT_PLUG_AND_PLAY_MODEL_ID "dtmi:avnet:mt3620Starterkit;1"  // https://docs.microsoft.com/en-us/azure/iot-pnp/overview-iot-plug-and-play 
+#else
+#define IOT_PLUG_AND_PLAY_MODEL_ID ""
+#endif
 
 // Define to build for Avnet's IoT Connect platform
 //#define USE_IOT_CONNECT
@@ -42,7 +44,7 @@
 // This will enable reading the ALST19 light sensor data from the M4 application
 // To exercise the inter-core communication code run the M4 application first
 // Enable the M4_INTERCORE_COMMS #define below
-#define M4_INTERCORE_COMMS
+//#define M4_INTERCORE_COMMS
 
 // Defines how quickly the light sensor is read and reported from the M4 core
 #define M4_READ_PERIOD_SECONDS 5
