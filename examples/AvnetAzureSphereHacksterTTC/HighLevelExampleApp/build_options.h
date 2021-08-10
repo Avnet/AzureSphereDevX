@@ -36,7 +36,7 @@
 // Install a 128x64 OLED display onto the unpopulated J7 Display connector
 // https://www.amazon.com/gp/product/B06XRCQZRX/ref=ppx_yo_dt_b_search_asin_title?ie=UTF8&psc=1
 // Enable the OLED_SD1306 #define below
-//#define OLED_SD1306
+#define OLED_SD1306
 
 // Include Intercore Communication code
 // This will enable reading the ALST19 light sensor data from the M4 application

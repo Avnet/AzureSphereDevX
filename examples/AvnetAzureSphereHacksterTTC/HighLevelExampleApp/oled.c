@@ -30,9 +30,6 @@ SOFTWARE.
 
 int8_t oled_state = 0;
 
-// Data of light sensor
-float light_sensor;
-
 // Altitude
 extern float altitude;
 
