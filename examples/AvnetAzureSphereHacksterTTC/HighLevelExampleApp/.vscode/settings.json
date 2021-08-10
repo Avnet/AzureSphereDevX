@@ -11,6 +11,7 @@
     "files.associations": {
         "dx_avnet_iot_connect.h": "c",
         "dx_json_serializer.h": "c",
-        "dx_utilities.h": "c"
+        "dx_utilities.h": "c",
+        "dx_exit_codes.h": "c"
     }
 }

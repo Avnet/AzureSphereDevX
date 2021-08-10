@@ -5,7 +5,7 @@
   "EntryPoint": "/bin/app",
   "CmdArgs": [ "--ScopeID", "0ne0008CB04" ],
     "Capabilities": {
-      "AllowedApplicationConnections": [ "005180bc-402f-4cb3-a662-72937dbcde47" ],
+      "AllowedApplicationConnections": [ "b2cec904-1c60-411b-8f62-5ffe9684b8ce" ],
       "AllowedConnections": [
         "global.azure-devices-provisioning.net",
         "BW-IoTHub.azure-devices.net"

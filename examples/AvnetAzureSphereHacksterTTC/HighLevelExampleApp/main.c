@@ -1,5 +1,5 @@
-/* Copyright (c) Microsoft Corporation. All rights reserved.
- * Licensed under the MIT License.
+/* Copyright (c) Avnet Incorporated. All rights reserved.
+ *   Licensed under the MIT License. 
  *
  *   DISCLAIMER
  *
@@ -50,10 +50,13 @@
 #include <applibs/wificonfig.h>
 #include <applibs/powermanagement.h>
 #include "build_options.h"
-#include "exit_codes.h"
+#include "app_exit_codes.h"
 #include "i2c.h"
 #include "oled.h"
-
+#ifdef M4_INTERCORE_COMMS
+#include "dx_intercore.h"
+#include "als_pt19_light_sensor.h"
+#endif // M4_INTERCORE_COMMS
 
 // Make sure we're using the IOT Hub code for the PNP configuration
 #ifdef USE_PNP
@@ -81,7 +84,7 @@ float lsm6dso_temperature;
 float pressure_kPa;
 float lps22hh_temperature;
 float altitude;
-float light_sensor;
+double light_sensor;
 network_var network_data;
 
 // Forward declarations
@@ -103,7 +106,9 @@ static void ReadWifiConfig(bool outputDebug);
 static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer);
 static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type button_state);
 static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key);
-
+#ifdef M4_INTERCORE_COMMS
+static void alsPt19_receive_msg_handler(void *data_block, ssize_t message_length);
+#endif // M4_INTERCORE_COMMS
 
 DX_USER_CONFIG dx_config;
 
@@ -177,6 +182,25 @@ static DX_TIMER_BINDING buttonPressCheckTimer = {.period = {0, ONE_MS*10}, .name
 static DX_TIMER_BINDING oled_timer = {.period = {0, 100 * ONE_MS}, .name = "oledTimer", .handler = UpdateOledEventHandler};
 #endif 
 
+#ifdef M4_INTERCORE_COMMS
+/****************************************************************************************
+ * Inter Core Bindings
+*****************************************************************************************/
+IC_COMMAND_BLOCK_ALS_PT19 ic_control_block_alsPt19_light_sensor = {.cmd = IC_READ_SENSOR,
+                                                                   .lightSensorLuxData = 0.0,
+                                                                   .sensorData = 0,
+                                                                   .sensorSampleRate = 0};
+
+DX_INTERCORE_BINDING intercore_alsPt19_light_sensor = {
+    .sockFd = -1,
+    .nonblocking_io = true,
+    .rtAppComponentId = "b2cec904-1c60-411b-8f62-5ffe9684b8ce",
+    .interCoreCallback = alsPt19_receive_msg_handler,
+    .intercore_recv_block = &ic_control_block_alsPt19_light_sensor,
+    .intercore_recv_block_length = sizeof(ic_control_block_alsPt19_light_sensor)};
+
+#endif // M4_INTERCORE_COMMS
+
 // All bindings referenced in the folowing binding sets are initialised in the InitPeripheralsAndHandlers function
 DX_DEVICE_TWIN_BINDING *device_twin_bindings[] = {&dt_user_led_red, &dt_user_led_green, &dt_user_led_blue, &dt_wifi_led, 
                                                   &dt_app_led, &dt_relay1, &dt_relay2, &dt_desired_sample_rate, &dt_oled_line1, 
@@ -195,29 +219,93 @@ DX_TIMER_BINDING *timer_bindings[] = {&tmr_monitor_wifi_network, &tmr_read_senso
  * Implementation
  ****************************************************************************************/
 
-static void publish_message_handler(void)
+static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
 {
 
+    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
+        dx_terminate(ExitCode_ConsumeEventLoopWifiMonitor);
+        return;
+    }
+
+    ReadWifiConfig(true);
+}
+
+static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
+{
+
+    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
+        dx_terminate(ExitCode_ConsumeEventLoopReadSensors);
+        return;
+    }
+
+    // Read the sensors
+    acceleration_g = lp_get_acceleration();
+    angular_rate_dps = lp_get_angular_rate();
+    lsm6dso_temperature = lp_get_temperature();
+#ifdef M4_INTERCORE_COMMS
+    // Send read sensor message to realtime core app one
+    ic_control_block_alsPt19_light_sensor.cmd = IC_READ_SENSOR;
+    dx_intercorePublish(&intercore_alsPt19_light_sensor, &ic_control_block_alsPt19_light_sensor,
+                            sizeof(IC_COMMAND_BLOCK_ALS_PT19));
+#endif
+    // The ALTITUDE value calculated is actually "Pressure Altitude". This lacks correction for
+    // temperature (and humidity)
+    // "pressure altitude" calculator located at:
+    // https://www.weather.gov/epz/wxcalc_pressurealtitude "pressure altitude" formula is defined
+    // at: https://www.weather.gov/media/epz/wxcalc/pressureAltitude.pdf altitude in feet =
+    // 145366.45 * (1 - (hPa / 1013.25) ^ 0.190284) feet altitude in meters = 145366.45 * 0.3048 *
+    // (1 - (hPa / 1013.25) ^ 0.190284) meters
+    //
+    // weather.com formula
+    // altitude = 44307.69396 * (1 - powf((atm / 1013.25), 0.190284));  // pressure altitude in
+    // meters
+    // Bosch's formula
+    altitude = 44330 * (1 - powf(((float)(pressure_kPa * 1000 / 1013.25)),
+                                       (float)(1 / 5.255))); // pressure altitude in meters
+
+    Log_Debug("\nLSM6DSO: Acceleration [g]  : %.4lf, %.4lf, %.4lf\n", acceleration_g.x,
+              acceleration_g.y, acceleration_g.z);
+    Log_Debug("LSM6DSO: Angular rate [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
+              angular_rate_dps.y, angular_rate_dps.z);
+    Log_Debug("LSM6DSO: Temperature1 [degC]: %.2f\n", lsm6dso_temperature);
+    Log_Debug("ALSPT19: Ambient Light[Lux] : %.2f\r\n", light_sensor);
+
+  	if (lps22hhDetected) {
+
+        pressure_kPa = lp_get_pressure();
+        lps22hh_temperature = lp_get_temperature_lps22h();
+    
+		Log_Debug("LPS22HH: Pressure     [kPa] : %.2f\n", pressure_kPa);
+        Log_Debug("LPS22HH: Pressure Altitude [m] : %.2f\n", altitude);
+        Log_Debug("LPS22HH: Temperature2 [degC]: %.2f\n", lps22hh_temperature);
+    }
+    // LPS22HH was not detected
+    else {
+
+        Log_Debug("LPS22HH: Pressure     [kPa] : Not read!\n");
+        Log_Debug("LPS22HH: Pressure Altitude [m] : Not calculated!\n");
+        Log_Debug("LPS22HH: Temperature  [degC]: Not read!\n");
+    }
+
+    // Send the latest readings up as telemetry
+    publish_message_handler();
+}
+
+static void publish_message_handler(void)
+{
 #ifdef IOT_HUB_APPLICATION
 #ifdef USE_IOT_CONNECT
     // If we have not completed the IoTConnect connect sequence, then don't send telemetry
     if(IoTCConnected){
 #endif         
-
         // Keep track of the first time through this code.  The LSMD6S0 returns bad data the first time
         // we read it.  Don't send that data up in case we're charting the data.
         static bool firstPass = true;
 
         if(!firstPass){
-
-            #define JSON_BUFFER_SIZE 256
-
             if (dx_isAzureConnected()) {
 
-
-//#define USE_DEVX_SERIALIZATION
 #ifdef USE_DEVX_SERIALIZATION
-
                 // Serialize telemetry as JSON
                 bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
                     DX_JSON_DOUBLE, "gX", acceleration_g.x,
@@ -240,7 +328,6 @@ static void publish_message_handler(void)
                 } else {
                     Log_Debug("JSON Serialization failed: Buffer too small\n");
                 }
-
 #else // !USE_DEVX_SERIALIZATION
 
                 snprintf(msgBuffer, sizeof(msgBuffer),
@@ -269,81 +356,7 @@ static void publish_message_handler(void)
     }
 #endif // USE_IOT_CONNECT
 #endif // IOT_HUB_APPLICATION    
-
 }
-
-
-static void monitor_wifi_network_handler(EventLoopTimer *eventLoopTimer)
-{
-
-    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(ExitCode_ConsumeEventLoopWifiMonitor);
-        return;
-    }
-
-    ReadWifiConfig(true);
-}
-
-static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
-{
-
-    if (ConsumeEventLoopTimerEvent(eventLoopTimer) != 0) {
-        dx_terminate(ExitCode_ConsumeEventLoopReadSensors);
-        return;
-    }
-
-    acceleration_g = lp_get_acceleration();
-    Log_Debug("\nLSM6DSO: Acceleration [g]  : %.4lf, %.4lf, %.4lf\n", acceleration_g.x,
-              acceleration_g.y, acceleration_g.z);
-
-    angular_rate_dps = lp_get_angular_rate();
-    Log_Debug("LSM6DSO: Angular rate [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
-              angular_rate_dps.y, angular_rate_dps.z);
-
-    lsm6dso_temperature = lp_get_temperature();
-    Log_Debug("LSM6DSO: Temperature1 [degC]: %.2f\n", lsm6dso_temperature);
-
-  	if (lps22hhDetected) {
-
-        pressure_kPa = lp_get_pressure();
-        lps22hh_temperature = lp_get_temperature_lps22h();
-    
-		Log_Debug("LPS22HH: Pressure     [kPa] : %.2f\n", pressure_kPa);
-        Log_Debug("LPS22HH: Temperature2 [degC]: %.2f\n", lps22hh_temperature);
-    }
-    // LPS22HH was not detected
-    else {
-
-        Log_Debug("LPS22HH: Pressure     [kPa] : Not read!\n");
-        Log_Debug("LPS22HH: Temperature  [degC]: Not read!\n");
-    }
-
-#ifdef M4_INTERCORE_COMMS
-    Log_Debug("ALSPT19: Ambient Light[Lux] : %.2f\r\n", light_sensor);
-#endif
-
-    // Read the current wifi configuration
-    ReadWifiConfig(false);
-
-    // The ALTITUDE value calculated is actually "Pressure Altitude". This lacks correction for
-    // temperature (and humidity)
-    // "pressure altitude" calculator located at:
-    // https://www.weather.gov/epz/wxcalc_pressurealtitude "pressure altitude" formula is defined
-    // at: https://www.weather.gov/media/epz/wxcalc/pressureAltitude.pdf altitude in feet =
-    // 145366.45 * (1 - (hPa / 1013.25) ^ 0.190284) feet altitude in meters = 145366.45 * 0.3048 *
-    // (1 - (hPa / 1013.25) ^ 0.190284) meters
-    //
-    // weather.com formula
-    // altitude = 44307.69396 * (1 - powf((atm / 1013.25), 0.190284));  // pressure altitude in
-    // meters
-    // Bosch's formula
-    altitude = 44330 * (1 - powf(((float)(pressure_kPa * 1000 / 1013.25)),
-                                       (float)(1 / 5.255))); // pressure altitude in meters
-
-    // Send the latest readings up as telemetry
-    publish_message_handler();
-}
-
 
 static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
 {
@@ -359,15 +372,6 @@ static void dt_desired_sample_rate_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBin
     } else {
         dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_ERROR);
     }
-
-    /*	Casting device twin state examples
-
-            float value = *(float*)deviceTwinBinding->propertyValue;
-            double value = *(double*)deviceTwinBinding->propertyValue;
-            int value = *(int*)deviceTwinBinding->propertyValue;
-            bool value = *(bool*)deviceTwinBinding->propertyValue;
-            char* value = (char*)deviceTwinBinding->propertyValue;
-    */
 }
 
 static void dt_gpio_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
@@ -398,7 +402,6 @@ static void dt_oled_message_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
         // Is the message size less than the destination buffer size and printable characters
         if (strlen(new_message) < CLOUD_MSG_SIZE && dx_isStringPrintable(new_message)) {
             strncpy(ptr_oled_variable, new_message, CLOUD_MSG_SIZE);
-            Log_Debug("New Oled Message: %s\n", ptr_oled_variable);
             dx_deviceTwinAckDesiredValue(deviceTwinBinding, deviceTwinBinding->propertyValue, DX_DEVICE_TWIN_RESPONSE_COMPLETED);
         } else {
             message_processed = false;
@@ -450,7 +453,6 @@ static void ReadWifiConfig(bool outputDebug){
 	}
 	else 
 	{
-
         network_data.frequency_MHz = network.frequencyMHz;
         network_data.rssi = network.signalRssi;
 		snprintf(bssid, BSSID_SIZE, "%02x:%02x:%02x:%02x:%02x:%02x",
@@ -681,6 +683,32 @@ static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer)
 #endif 
 
 /// <summary>
+/// alsPt19_receive_msg_handler()
+/// This handler is called when the high level application receives a raw data read response from the 
+/// AvnetAls-PT19 real time application.
+/// </summary>
+static void alsPt19_receive_msg_handler(void *data_block, ssize_t message_length)
+{
+    // Cast the data block so we can index into the data
+    IC_COMMAND_BLOCK_ALS_PT19 *messageData = (IC_COMMAND_BLOCK_ALS_PT19*) data_block;
+
+    switch (messageData->cmd) {
+        case IC_READ_SENSOR:
+            // Pull the raw sensor data anb convert to Lux units
+            light_sensor = (messageData->sensorData * 2.5/4095)*1000000 / (float)(3650*0.1428);
+            break;
+        
+        // Handle the other cases by doing nothing
+        case IC_UNKNOWN:
+        case IC_HEARTBEAT:
+        case IC_READ_SENSOR_RESPOND_WITH_TELEMETRY:
+        case IC_SET_SAMPLE_RATE:
+        default:
+            break;
+    }
+}
+
+/// <summary>
 ///  Initialize peripherals, device twins, direct methods, timer_bindings.
 /// </summary>
 static void InitPeripheralsAndHandlers(void)
@@ -696,6 +724,12 @@ static void InitPeripheralsAndHandlers(void)
     // Initialize the i2c sensors
     lp_imu_initialize();
 
+#ifdef M4_INTERCORE_COMMS
+    // Initialize Intercore Communications for core one
+    if(!dx_intercoreConnect(&intercore_alsPt19_light_sensor)){
+        dx_terminate(ExitCode_rtAppInitFailed);
+    }
+#endif // M4_INTERCORE_COMMS
 }
 
 /// <summary>
@@ -715,7 +749,6 @@ static void ClosePeripheralsAndHandlers(void)
 int main(int argc, char *argv[])
 {
     dx_registerTerminationHandler();
-
     Log_Debug("Avnet Starter Kit Simple Reference Application starting.\n");
 
     if (!dx_configParseCmdLineArguments(argc, argv, &dx_config)) {

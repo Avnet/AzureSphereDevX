@@ -13,7 +13,7 @@
             "cwd": "${workspaceFolder}",
             "environment": [],
             "externalConsole": true,
-            "partnerComponents": [],
+            "partnerComponents": ["b2cec904-1c60-411b-8f62-5ffe9684b8ce"],
             "MIMode": "gdb",
             "setupCommands": [
                 {

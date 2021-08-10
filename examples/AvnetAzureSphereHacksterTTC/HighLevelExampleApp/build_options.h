@@ -42,7 +42,7 @@
 // This will enable reading the ALST19 light sensor data from the M4 application
 // To exercise the inter-core communication code run the M4 application first
 // Enable the M4_INTERCORE_COMMS #define below
-//#define M4_INTERCORE_COMMS
+#define M4_INTERCORE_COMMS
 
 // Defines how quickly the light sensor is read and reported from the M4 core
 #define M4_READ_PERIOD_SECONDS 5
@@ -61,4 +61,8 @@
 
 // Enables I2C read/write debug
 //#define ENABLE_READ_WRITE_DEBUG
+
+// Set this flag to send telemetry data using the DevX seralizer
+//#define USE_DEVX_SERIALIZATION
+
 #endif 

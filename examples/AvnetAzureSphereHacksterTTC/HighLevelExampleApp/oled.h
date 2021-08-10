@@ -35,7 +35,7 @@ SOFTWARE.
 #include "applibs_versions.h"
 #include <applibs/wificonfig.h>
 
-#define CLOUD_MSG_SIZE 22
+#define CLOUD_MSG_SIZE 23
 
 #define OLED_NUM_SCREEN 7
 
@@ -95,18 +95,11 @@ typedef struct
 } network_var;
 
 extern network_var network_data;
-
-extern float light_sensor;
-
+extern double light_sensor;
 extern uint8_t oled_init(void);
-
 extern void oled_i2c_bus_status(uint8_t lsmod_status);
-
 extern void update_oled(void);
-
 extern void oled_draw_logo(void);
-
-
 
 void update_network(void);
 void update_accel(float x, float y, float z);
@@ -133,5 +126,4 @@ extern void ftoa(float n, uint8_t *res, int32_t afterpoint);
 extern int32_t intToStr(int32_t x, uint8_t str[], int32_t d);
 
 uint8_t get_str_size(uint8_t * str);
-
 #endif
