@@ -3,16 +3,14 @@
  *
  *   DEVELOPER BOARD SELECTION
  *
+ *   Each Azure Sphere developer board manufacturer maps pins differently. You need to select the
+ *      configuration that matches your board.
+*
  *   The following developer boards are supported.
  *
  *	   1. AVNET Azure Sphere Starter Kit.
  *     2. AVNET Azure Sphere Starter Kit Revision 2.
- *
- *   ENABLE YOUR DEVELOPER BOARD
- *
- *   Each Azure Sphere developer board manufacturer maps pins differently. You need to select the
- *      configuration that matches your board.
- *
+ * *
  *   Follow these steps:
  *
  *	   1. Open CMakeLists.txt.
@@ -20,7 +18,8 @@
  *	   3. Click File, then Save to save the CMakeLists.txt file which will auto generate the
  *          CMake Cache.
  *
- ************************************************************************************************/
+ *
+ * ************************************************************************************************/
 
 #include "hw/sample_appliance.h" // Hardware definition
 #include "build_options.h"
@@ -37,6 +36,9 @@
 #ifdef M4_INTERCORE_COMMS
 #include "dx_intercore.h"
 #endif // M4_INTERCORE_COMMS
+#ifdef USE_IOT_CONNECT
+#include "dx_avnet_iot_connect.h"
+#endif // USE_IOT_CONNECT
 
 // Azure Sphere SDK libraries
 #include "applibs_versions.h"
@@ -111,6 +113,9 @@ DX_USER_CONFIG dx_config;
 // Number of bytes to allocate for the JSON telemetry message for IoT Hub/Central
 #define JSON_MESSAGE_BYTES 512
 static char msgBuffer[JSON_MESSAGE_BYTES] = {0};
+#ifdef USE_IOT_CONNECT
+static char avtMsgBuffer[JSON_MESSAGE_BYTES + DX_AVNET_IOT_CONNECT_METADATA] = {0};
+#endif //USE_IOT_CONNECT
 
 static DX_MESSAGE_PROPERTY *messageProperties[] =   {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "SK-Demo"}, 
                                                     &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
@@ -160,9 +165,9 @@ static DX_DEVICE_TWIN_BINDING dt_bssid =          {.propertyName = "bssid", .twi
 /****************************************************************************************
  * Direct Methods
  ****************************************************************************************/
-static DX_DIRECT_METHOD_BINDING dm_sensor_poll_time = {.methodName = "setSensorPollTime", .handler = dm_set_sensor_poll_period};
-static DX_DIRECT_METHOD_BINDING dm_reboot_control =      {.methodName = "rebootDevice", .handler = dm_restart_device_handler};
-static DX_DIRECT_METHOD_BINDING dm_halt_control =       {.methodName = "haltApplication", .handler = dm_halt_device_handler};
+static DX_DIRECT_METHOD_BINDING dm_sensor_poll_time = {.methodName = "setSensorPollTime", .handler = dm_set_sensor_poll_period}; // {"pollTime": <integer>}
+static DX_DIRECT_METHOD_BINDING dm_reboot_control =   {.methodName = "rebootDevice", .handler = dm_restart_device_handler};   // {"delayTime": <integer>}
+static DX_DIRECT_METHOD_BINDING dm_halt_control =     {.methodName = "haltApplication", .handler = dm_halt_device_handler};    // {}
 
 /****************************************************************************************
  * Timers
@@ -308,50 +313,80 @@ static void publish_message_handler(void)
 #ifdef IOT_HUB_APPLICATION
 #ifdef USE_IOT_CONNECT
     // If we have not completed the IoTConnect connect sequence, then don't send telemetry
-    if(true){// IoTCConnected){
-#endif         
-        if (dx_isAzureConnected()) {
+    if(dx_isAvnetConnected()){
+#else  // !IoT Connect 
+    if (dx_isAzureConnected()) {
+#endif // USE_IOT_CONNECT
 
 #ifdef USE_DEVX_SERIALIZATION
-            // Serialize telemetry as JSON
-            bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
-                DX_JSON_DOUBLE, "gX", acceleration_g.x,
-                DX_JSON_DOUBLE, "gY", acceleration_g.y,
-                DX_JSON_DOUBLE, "gZ", acceleration_g.z,
-                DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
-                DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
-                DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
-                DX_JSON_DOUBLE, "pressure", pressure_kPa,
-                DX_JSON_DOUBLE, "light_intensity", light_sensor,
-                DX_JSON_DOUBLE, "altitude", altitude,
-                DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
-                DX_JSON_INT, "rssi", network_data.rssi);
+        // Serialize telemetry as JSON
+#ifdef USE_IOT_CONNECT
+        bool serialization_result = dx_avnetJsonSerialize(avtMsgBuffer, sizeof(avtMsgBuffer), 11, 
+            DX_JSON_DOUBLE, "gX", acceleration_g.x,
+            DX_JSON_DOUBLE, "gY", acceleration_g.y,
+            DX_JSON_DOUBLE, "gZ", acceleration_g.z,
+            DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
+            DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
+            DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
+            DX_JSON_DOUBLE, "pressure", pressure_kPa,
+            DX_JSON_DOUBLE, "light_intensity", light_sensor,
+            DX_JSON_DOUBLE, "altitude", altitude,
+            DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
+            DX_JSON_INT, "rssi", network_data.rssi);
 
-            if (serialization_result) {
+        if (serialization_result) {
 
-                Log_Debug("%s\n", msgBuffer);
-                dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+            Log_Debug("%s\n", avtMsgBuffer);
+            dx_azurePublish(avtMsgBuffer, strlen(avtMsgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
 
-            } else {
-                Log_Debug("JSON Serialization failed: Buffer too small\n");
-            }
+#else // ! IoT Connect
+
+        bool serialization_result = dx_jsonSerialize(msgBuffer, sizeof(msgBuffer), 11, 
+            DX_JSON_DOUBLE, "gX", acceleration_g.x,
+            DX_JSON_DOUBLE, "gY", acceleration_g.y,
+            DX_JSON_DOUBLE, "gZ", acceleration_g.z,
+            DX_JSON_DOUBLE, "aX", angular_rate_dps.x,
+            DX_JSON_DOUBLE, "aY", angular_rate_dps.y,
+            DX_JSON_DOUBLE, "aZ", angular_rate_dps.z,
+            DX_JSON_DOUBLE, "pressure", pressure_kPa,
+            DX_JSON_DOUBLE, "light_intensity", light_sensor,
+            DX_JSON_DOUBLE, "altitude", altitude,
+            DX_JSON_DOUBLE, "temp", lsm6dso_temperature,
+            DX_JSON_INT, "rssi", network_data.rssi);
+
+        if (serialization_result) {
+
+            Log_Debug("%s\n", msgBuffer);
+            dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+
+#endif  // USE_IOT_CONNECT
+
+        } else {
+            Log_Debug("JSON Serialization failed: Buffer too small\n");
+        }
 #else // !USE_DEVX_SERIALIZATION
 
-            snprintf(msgBuffer, sizeof(msgBuffer),
-                "{\"gX\":%.2lf, \"gY\":%.2lf, \"gZ\":%.2lf, \"aX\": %.2f, \"aY\": "
-                "%.2f, \"aZ\": %.2f, \"pressure\": %.2f, \"light_intensity\": %.2f, "
-                "\"altitude\": %.2f, \"temp\": %.2f,  \"rssi\": %d}",
-                acceleration_g.x, acceleration_g.y, acceleration_g.z, angular_rate_dps.x,
-                angular_rate_dps.y, angular_rate_dps.z, pressure_kPa, light_sensor, altitude,
-                lsm6dso_temperature, network_data.rssi);                
+        snprintf(msgBuffer, sizeof(msgBuffer),
+            "{\"gX\":%.2lf, \"gY\":%.2lf, \"gZ\":%.2lf, \"aX\": %.2f, \"aY\": "
+            "%.2f, \"aZ\": %.2f, \"pressure\": %.2f, \"light_intensity\": %.2f, "
+            "\"altitude\": %.2f, \"temp\": %.2f,  \"rssi\": %d}",
+            acceleration_g.x, acceleration_g.y, acceleration_g.z, angular_rate_dps.x,
+            angular_rate_dps.y, angular_rate_dps.z, pressure_kPa, light_sensor, altitude,
+            lsm6dso_temperature, network_data.rssi);                
 
-                Log_Debug("%s\n", msgBuffer);
-                dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
-#endif                     
-            }
-#ifdef USE_IOT_CONNECT        
-    }
+#ifdef USE_IOT_CONNECT
+
+            // Add the IoTConnect metadata to the seralized telemetry
+            dx_avnetJsonSerializePayload(msgBuffer, avtMsgBuffer, sizeof(avtMsgBuffer));
+            Log_Debug("%s\n", avtMsgBuffer);
+            dx_azurePublish(avtMsgBuffer, strlen(avtMsgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
+
+#else // !USE_IOT_CONNECt
+            Log_Debug("%s\n", msgBuffer);
+            dx_azurePublish(msgBuffer, strlen(msgBuffer), messageProperties, NELEMS(messageProperties), &contentProperties);
 #endif // USE_IOT_CONNECT
+#endif // // !USE_DEVX_SERIALIZATION                    
+        }
 #endif // IOT_HUB_APPLICATION    
 }
 
@@ -752,7 +787,11 @@ static void alsPt19_receive_msg_handler(void *data_block, ssize_t message_length
 static void InitPeripheralsAndHandlers(void)
 {
 #ifdef IOT_HUB_APPLICATION
+#ifdef USE_IOT_CONNECT
+    dx_avnetConnect(&dx_config, NETWORK_INTERFACE);
+#else // not Avnet IoTConnect
     dx_azureConnect(&dx_config, NETWORK_INTERFACE, IOT_PLUG_AND_PLAY_MODEL_ID);
+#endif // USE_IOT_CONNECT    
 #endif // IOT_HUB_APPLICATION    
     dx_gpioSetOpen(gpio_bindings, NELEMS(gpio_bindings));
     dx_timerSetStart(timer_bindings, NELEMS(timer_bindings));
