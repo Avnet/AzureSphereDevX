@@ -108,8 +108,8 @@ The sample requires the following software:
 
 **Note:** By default, this sample targets the [Avnet Azue Sphere Starter Kit Rev1](http://avnet.me/mt3620-kit) board. To build the sample for the Rev2 board, change the Target Hardware Definition Directory in the CMakeLists.txt file.
 
-* Rev1: '''set(AVNET TRUE "AVNET Azure Sphere Starter Kit Revision 1 ")'''
-* Rev2: '''set(AVNET_REV_2 TRUE "AVNET Azure Sphere Starter Kit Revision 2 ")'''
+* Rev1: ```set(AVNET TRUE "AVNET Azure Sphere Starter Kit Revision 1 ")```
+* Rev2: ```set(AVNET_REV_2 TRUE "AVNET Azure Sphere Starter Kit Revision 2 ")```
 
 1. Set up your Azure Sphere device and development environment as described in [Azure Sphere documentation](https://docs.microsoft.com/azure-sphere/install/overview).
 1. Clone the Azure Sphere Samples repository on GitHub and navigate to the examples/AvnetAzureSphereHacksterTTC/HighLevelExampleApp folder.
