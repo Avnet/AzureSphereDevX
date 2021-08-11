@@ -40,7 +40,7 @@ extern uint8_t oled_ms3[CLOUD_MSG_SIZE];
 extern uint8_t oled_ms4[CLOUD_MSG_SIZE];
 
 // Status variables of I2C bus and RT core
-extern uint8_t RTCore_status;
+extern uint8_t RTCore_connected;
 extern uint8_t lsm6dso_status;
 extern uint8_t lps22hh_status;
 
@@ -223,7 +223,7 @@ void oled_i2c_bus_status(uint8_t sensor_number)
 			sd1306_draw_string(OLED_LINE_4_X, OLED_LINE_4_Y, str_rtcore_sta, FONT_SIZE_LINE, white_pixel);
 
 			// Show RTcore status
-			if ( RTCore_status == 0)
+			if (RTCore_connected)
 			{
 				sd1306_draw_string(sizeof(str_rtcore_sta) * 6, OLED_LINE_4_Y, "OK", FONT_SIZE_LINE, white_pixel);
 			}

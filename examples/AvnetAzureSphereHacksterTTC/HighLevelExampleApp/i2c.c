@@ -106,7 +106,7 @@ float lps22hh_temperature;
 // Status variables
 uint8_t lsm6dso_status = 1;
 uint8_t lps22hh_status = 1;
-uint8_t RTCore_status = 1;
+bool RTCore_connected = false;
 #endif 
 
 /*

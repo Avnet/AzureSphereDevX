@@ -62,13 +62,16 @@
 
 // Globals
 // Array with messages from Azure
-char oled_ms1[CLOUD_MSG_SIZE];
-char oled_ms2[CLOUD_MSG_SIZE];
-char oled_ms3[CLOUD_MSG_SIZE];
-char oled_ms4[CLOUD_MSG_SIZE];
+//                                123456789012345678901
+char oled_ms1[CLOUD_MSG_SIZE] = {"        Avnet         "};
+char oled_ms2[CLOUD_MSG_SIZE] = {"     Azure Sphere     "};
+char oled_ms3[CLOUD_MSG_SIZE] = {"     Starter Kit      "};
+char oled_ms4[CLOUD_MSG_SIZE] = {"                      "};
 
 bool sensor_debug_enabled = true;
-
+#ifdef OLED_SD1306
+extern bool RTCore_connected;
+#endif 
 // Global variables to hold sensor readings.  We read the sensors very 
 // quickly, but only send telemetry when the send telemeter timer expires
 AccelerationgForce acceleration_g;
@@ -79,6 +82,7 @@ float lps22hh_temperature;
 float altitude;
 double light_sensor;
 network_var network_data;
+
 
 // Forward declarations
 //static DX_DIRECT_METHOD_RESPONSE_CODE LightControlHandler(JSON_Value *json, DX_DIRECT_METHOD_BINDING *directMethodBinding, char **responseMsg);
@@ -97,7 +101,9 @@ static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer);
 #endif // OLED_SD1306
 static void ReadWifiConfig(bool outputDebug);
 static void ButtonPressCheckHandler(EventLoopTimer *eventLoopTimer);
+#ifdef IOT_HUB_APPLICATION
 static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type button_state);
+#endif // IOT_HUB_APPLICATION
 static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_state, const char* telemetry_key);
 static void dt_debug_handler(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
 #ifdef M4_INTERCORE_COMMS
@@ -112,16 +118,20 @@ DX_USER_CONFIG dx_config;
 
 // Number of bytes to allocate for the JSON telemetry message for IoT Hub/Central
 #define JSON_MESSAGE_BYTES 512
+#ifdef IOT_HUB_APPLICATION
 static char msgBuffer[JSON_MESSAGE_BYTES] = {0};
+#endif // IOT_HUB_APPLICATION        
 #ifdef USE_IOT_CONNECT
 static char avtMsgBuffer[JSON_MESSAGE_BYTES + DX_AVNET_IOT_CONNECT_METADATA] = {0};
 #endif //USE_IOT_CONNECT
 
+#ifdef IOT_HUB_APPLICATION
 static DX_MESSAGE_PROPERTY *messageProperties[] =   {&(DX_MESSAGE_PROPERTY){.key = "appid", .value = "SK-Demo"}, 
                                                     &(DX_MESSAGE_PROPERTY){.key = "type", .value = "telemetry"},
                                                     &(DX_MESSAGE_PROPERTY){.key = "schema", .value = "1"}};
 
 static DX_MESSAGE_CONTENT_PROPERTIES contentProperties = {.contentEncoding = "utf-8", .contentType = "application/json"};
+#endif //IOT_HUB_APPLICATION
 
 /****************************************************************************************
  * GPIO Peripherals
@@ -522,15 +532,15 @@ static void ReadWifiConfig(bool outputDebug){
 			network.bssid[0], network.bssid[1], network.bssid[2], 
 			network.bssid[3], network.bssid[4], network.bssid[5]);
 
+        // Clear the ssid array
+        memset(network_data.SSID, 0, WIFICONFIG_SSID_MAX_LENGTH);
+        strncpy(network_data.SSID, network.ssid, network.ssidLength);
+
         // Make sure we're connected to the IoTHub before updating the local variable or sending device twin updates
         if (dx_isAzureConnected()) {
 
             // Check to see if the SSID changed, if so update the SSID and send updated device twins properties
             if (strncmp(network_data.SSID, (char*)&network.ssid, network.ssidLength)!=0 ) {
-
-                // Clear the ssid array
-                memset(network_data.SSID, 0, WIFICONFIG_SSID_MAX_LENGTH);
-                strncpy(network_data.SSID, network.ssid, network.ssidLength);
 
 #ifdef IOT_HUB_APPLICATION
                 // Note that we send up this data to Azure if it changes, but the IoT Central Properties elements only 
@@ -717,10 +727,13 @@ static void ProcessButtonState(GPIO_Value_Type new_state, GPIO_Value_Type* old_s
         if(sensor_debug_enabled){
             Log_Debug("%s %s!\n", telemetry_key, (new_state == GPIO_Value_Low) ? "Pressed": "Released");
         }
+#ifdef IOT_HUB_APPLICATION
         SendButtonTelemetry(telemetry_key, new_state);
+#endif // IOT_HUB_APPLICATION
     }
 }
 
+#ifdef IOT_HUB_APPLICATION
 /// <summary>
 /// Send button telemetry
 /// </summary>
@@ -739,6 +752,7 @@ static void SendButtonTelemetry(const char* telemetry_key, GPIO_Value_Type butto
         Log_Debug("JSON Serialization failed\n");
     }
 }
+#endif // IOT_HUB_APPLICATION
 
 #ifdef OLED_SD1306
 static void UpdateOledEventHandler(EventLoopTimer *eventLoopTimer)
@@ -806,6 +820,9 @@ static void InitPeripheralsAndHandlers(void)
     // Initialize Intercore Communications for core one
     if(!dx_intercoreConnect(&intercore_alsPt19_light_sensor)){
         dx_terminate(ExitCode_rtAppInitFailed);
+    }
+    else{
+        RTCore_connected = true;
     }
 #endif // M4_INTERCORE_COMMS
 }

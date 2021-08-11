@@ -162,7 +162,7 @@
         {
             "name": "RGB Led (Red)",
             "type": "STRING",
-            "localName": "userLedReg",
+            "localName": "userLedRed",
             "defaultValue": "false",
             "dataValidation": "true, false",
             "isReadOnly": false
