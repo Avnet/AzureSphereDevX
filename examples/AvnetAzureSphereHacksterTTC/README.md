@@ -7,6 +7,8 @@ The Starter Kit is available for purchase [here](http://avnet.me/mt3620-kit).
 
 We've put together four different blogs to showcase the Avnet Azure Sphere Starter Kit and how it can be used for your next IoT project.  The blogs all leverage this example application.
 
+# NOTE: The blogs listed below refer to a different GitHub repo, however the materials will work with this DevX repo
+
 * Blog #1: Simple non-connected demo
    * Reads on-board sensors every 1 second
    * Reports sensor readings to the Visual Studio debug console
