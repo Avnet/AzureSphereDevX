@@ -69,9 +69,8 @@ char oled_ms3[CLOUD_MSG_SIZE] = {"     Starter Kit      "};
 char oled_ms4[CLOUD_MSG_SIZE] = {"                      "};
 
 bool sensor_debug_enabled = true;
-#ifdef OLED_SD1306
 extern bool RTCore_connected;
-#endif 
+
 // Global variables to hold sensor readings.  We read the sensors very 
 // quickly, but only send telemetry when the send telemeter timer expires
 AccelerationgForce acceleration_g;
@@ -290,7 +289,7 @@ static void read_sensors_handler(EventLoopTimer *eventLoopTimer)
         Log_Debug("LSM6DSO: Angular rate      [dps] : %4.2f, %4.2f, %4.2f\n", angular_rate_dps.x,
                 angular_rate_dps.y, angular_rate_dps.z);
         Log_Debug("LSM6DSO: Temperature1      [degC]: %.2f\n", lsm6dso_temperature);
-        Log_Debug("ALSPT19: Ambient Light     [Lux] : %.2f\r\n", light_sensor);
+        Log_Debug("ALSPT19: Ambient Light     [Lux] : %.2f\n", light_sensor);
     }
   	if (lps22hhDetected) {
 
