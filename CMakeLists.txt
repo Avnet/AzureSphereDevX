@@ -13,6 +13,8 @@ set(Source
     "./src/dx_intercore.c"
     "./src/parson.c"
     "./src/dx_gpio.c"
+    "./src/dx_i2c.c"
+    "./src/dx_pwm.c"
     "./src/dx_terminate.c"
     "./src/dx_timer.c"
     "./src/dx_utilities.c"

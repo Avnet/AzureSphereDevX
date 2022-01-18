@@ -8,6 +8,16 @@
 #include "dx_gpio.h"
 #include <iothub_device_client_ll.h>
 
+#define DX_DEVICE_TWIN_HANDLER(name, deviceTwinBinding) \
+	void name(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)      \
+	{
+
+#define DX_DEVICE_TWIN_HANDLER_END \
+	}
+
+#define DX_DECLARE_DEVICE_TWIN_HANDLER(name) \
+	void name(DX_DEVICE_TWIN_BINDING *deviceTwinBinding);
+
 typedef enum {
 	DX_TYPE_UNKNOWN = 0,
 	DX_DEVICE_TWIN_BOOL = 1,
