@@ -6,6 +6,7 @@
 #include "dx_azure_iot.h"
 #include "parson.h"
 #include "dx_gpio.h"
+#include "../parson.h"
 #include <iothub_device_client_ll.h>
 
 #define DX_DEVICE_TWIN_HANDLER(name, deviceTwinBinding) \
@@ -24,7 +25,8 @@ typedef enum {
 	DX_DEVICE_TWIN_FLOAT = 2,
 	DX_DEVICE_TWIN_DOUBLE = 3,
 	DX_DEVICE_TWIN_INT = 4,
-	DX_DEVICE_TWIN_STRING = 5
+	DX_DEVICE_TWIN_STRING = 5,
+	DX_DEVICE_TWIN_JSON_OBJECT = 6
 } DX_DEVICE_TWIN_TYPE;
 
 typedef struct _deviceTwinBinding {

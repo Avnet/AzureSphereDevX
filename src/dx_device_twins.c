@@ -75,6 +75,8 @@ static void deviceTwinOpen(DX_DEVICE_TWIN_BINDING *deviceTwinBinding)
     case DX_DEVICE_TWIN_STRING:
         // Note no memory is allocated for string twin type as size is unknown
         break;
+    case DX_DEVICE_TWIN_JSON_OBJECT:
+        // Note no memory is allocated for JSON OBJECT twin type as size is unknown
     default:
         break;
     }
@@ -220,6 +222,18 @@ static void SetDesiredState(JSON_Object *jsonObject, DX_DEVICE_TWIN_BINDING *dev
             deviceTwinBinding->propertyValue = NULL;
         }
         break;
+    case DX_DEVICE_TWIN_JSON_OBJECT:
+        if (json_object_has_value_of_type(jsonObject, deviceTwinBinding->propertyName,
+                                          JSONObject)) {
+            deviceTwinBinding->propertyValue =
+                (JSON_Object *)json_object_get_object(jsonObject, deviceTwinBinding->propertyName);
+
+            if (deviceTwinBinding->handler != NULL) {
+                deviceTwinBinding->handler(deviceTwinBinding);
+            }
+            deviceTwinBinding->propertyValue = NULL;
+        }
+        break;
     default:
         break;
     }
@@ -253,6 +267,7 @@ static bool deviceTwinReportState(DX_DEVICE_TWIN_BINDING *deviceTwinBinding, voi
     size_t reportLen = 10; // initialize to 10 chars to allow for JSON and NULL termination. This is
                            // generous by a couple of bytes
     bool result = false;
+    JSON_Value *jsonPayload = NULL;
 
     if (deviceTwinBinding == NULL) {
         return false;
@@ -344,6 +359,27 @@ static bool deviceTwinReportState(DX_DEVICE_TWIN_BINDING *deviceTwinBinding, voi
         break;
     case DX_DEVICE_TWIN_STRING:
         deviceTwinBinding->propertyValue = NULL;
+
+        if (deviceTwinPnPAcknowledgment) {
+            len = snprintf(reportedPropertiesString, reportLen,
+                           "{\"%s\":{\"value\":\"%s\", \"ac\":%d, \"av\":%d}}",
+                           deviceTwinBinding->propertyName, (char *)state, (int)statusCode,
+                           deviceTwinBinding->propertyVersion);
+        } else {
+            len = snprintf(reportedPropertiesString, reportLen, "{\"%s\":\"%s\"}",
+                           deviceTwinBinding->propertyName, (char *)state);
+        }
+
+        break;
+    case DX_DEVICE_TWIN_JSON_OBJECT:
+        //deviceTwinBinding->propertyValue = NULL;
+        
+        //JSON_Value *json_object_get_value(deviceTwinBinding->, const char *name);
+        jsonPayload = json_object_get_value(deviceTwinBinding->propertyValue, const char *name);
+
+        Log_Debug("PropertyName: %s\n", deviceTwinBinding->propertyName);
+
+
 
         if (deviceTwinPnPAcknowledgment) {
             len = snprintf(reportedPropertiesString, reportLen,
