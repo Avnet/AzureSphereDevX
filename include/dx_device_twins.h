@@ -6,7 +6,6 @@
 #include "dx_azure_iot.h"
 #include "parson.h"
 #include "dx_gpio.h"
-#include "../parson.h"
 #include <iothub_device_client_ll.h>
 
 #define DX_DEVICE_TWIN_HANDLER(name, deviceTwinBinding) \

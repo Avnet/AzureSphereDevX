@@ -267,7 +267,6 @@ static bool deviceTwinReportState(DX_DEVICE_TWIN_BINDING *deviceTwinBinding, voi
     size_t reportLen = 10; // initialize to 10 chars to allow for JSON and NULL termination. This is
                            // generous by a couple of bytes
     bool result = false;
-    JSON_Value *jsonPayload = NULL;
 
     if (deviceTwinBinding == NULL) {
         return false;
@@ -280,7 +279,7 @@ static bool deviceTwinReportState(DX_DEVICE_TWIN_BINDING *deviceTwinBinding, voi
     reportLen +=
         strlen(deviceTwinBinding->propertyName); // allow for twin property name in JSON response
 
-    if (deviceTwinBinding->twinType == DX_DEVICE_TWIN_STRING) {
+    if ((deviceTwinBinding->twinType == DX_DEVICE_TWIN_STRING) || (deviceTwinBinding->twinType == DX_DEVICE_TWIN_JSON_OBJECT)) {
         reportLen += strlen((char *)state);
     } else {
         reportLen += 40; // allow 40 chars for Int, float, double, and boolean serialization
@@ -372,26 +371,20 @@ static bool deviceTwinReportState(DX_DEVICE_TWIN_BINDING *deviceTwinBinding, voi
 
         break;
     case DX_DEVICE_TWIN_JSON_OBJECT:
-        //deviceTwinBinding->propertyValue = NULL;
-        
-        //JSON_Value *json_object_get_value(deviceTwinBinding->, const char *name);
-        jsonPayload = json_object_get_value(deviceTwinBinding->propertyValue, const char *name);
-
-        Log_Debug("PropertyName: %s\n", deviceTwinBinding->propertyName);
-
-
+        deviceTwinBinding->propertyValue = NULL;
 
         if (deviceTwinPnPAcknowledgment) {
             len = snprintf(reportedPropertiesString, reportLen,
-                           "{\"%s\":{\"value\":\"%s\", \"ac\":%d, \"av\":%d}}",
+                           "{\"%s\":{\"value\":%s, \"ac\":%d, \"av\":%d}}",
                            deviceTwinBinding->propertyName, (char *)state, (int)statusCode,
                            deviceTwinBinding->propertyVersion);
         } else {
-            len = snprintf(reportedPropertiesString, reportLen, "{\"%s\":\"%s\"}",
+            len = snprintf(reportedPropertiesString, reportLen, "{\"%s\":%s}",
                            deviceTwinBinding->propertyName, (char *)state);
         }
 
         break;
+
     case DX_TYPE_UNKNOWN:
         Log_Debug("Device Twin Type Unknown");
         break;
